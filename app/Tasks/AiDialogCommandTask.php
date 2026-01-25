@@ -15,15 +15,15 @@ class AiDialogCommandTask extends AbstractTask
     protected int $dialogId;
     protected string $command;
     protected int $userId;
-    protected int $notifyMsgId;
+    protected int $pendingMsgId;
 
-    public function __construct(int $dialogId, string $command, int $userId, int $notifyMsgId = 0)
+    public function __construct(int $dialogId, string $command, int $userId, int $pendingMsgId = 0)
     {
         parent::__construct();
         $this->dialogId = $dialogId;
         $this->command = $command;
         $this->userId = $userId;
-        $this->notifyMsgId = $notifyMsgId;
+        $this->pendingMsgId = $pendingMsgId;
     }
 
     public function start()
@@ -37,8 +37,8 @@ class AiDialogCommandTask extends AbstractTask
 
         try {
             match ($this->command) {
-                'analyze' => AiDialogCommand::analyze($dialog, $this->userId, $this->notifyMsgId),
-                'summarize' => AiDialogCommand::summarize($dialog, $this->userId, $this->notifyMsgId),
+                'analyze' => AiDialogCommand::analyze($dialog, $this->userId, $this->pendingMsgId),
+                'summarize' => AiDialogCommand::summarize($dialog, $this->userId, $this->pendingMsgId),
                 default => null,
             };
         } catch (\Throwable $e) {

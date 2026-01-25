@@ -2739,11 +2739,12 @@ export default {
                                 value: this.$L('工作报告'),
                                 tip: '%',
                             },
-                            {
+                            // /analyze 仅在任务和项目对话中显示
+                            ...(['task', 'project'].includes(this.dialogData?.group_type) ? [{
                                 id: 'analyze',
                                 value: this.$L('分析'),
                                 tip: '/analyze',
-                            },
+                            }] : []),
                             {
                                 id: 'summarize',
                                 value: this.$L('总结'),
