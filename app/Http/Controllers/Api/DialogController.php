@@ -33,6 +33,8 @@ use App\Models\WebSocketDialogSession;
 use App\Models\UserRecentItem;
 use App\Module\Table\OnlineData;
 use App\Module\Manticore\ManticoreMsg;
+use App\Module\Apps;
+use App\Tasks\AiDialogCommandTask;
 use Hhxsv5\LaravelS\Swoole\Task\Task;
 
 /**
@@ -3554,5 +3556,77 @@ class DialogController extends AbstractController
         Cache::forever('dialog_session_title_' . $session->id, true);
         //
         return Base::retSuccess('重命名成功', $session);
+    }
+
+    /**
+     * @api {post} api/dialog/ai/command 执行AI命令
+     *
+     * @apiDescription 需要token身份，在对话中执行 AI 命令（/analyze, /summarize）
+     * @apiVersion 1.0.0
+     * @apiGroup dialog
+     * @apiName ai__command
+     *
+     * @apiParam {Number} dialog_id     对话ID
+     * @apiParam {String} command       命令名称 (analyze/summarize)
+     *
+     * @apiSuccess {Number} ret     返回状态码（1正确、0错误）
+     * @apiSuccess {String} msg     返回信息（错误描述）
+     * @apiSuccess {Object} data    返回数据
+     */
+    public function ai__command()
+    {
+        $user = User::auth();
+
+        // 检查 AI 插件是否安装
+        if (!Apps::isInstalled('ai')) {
+            return Base::retError('AI 助手未安装');
+        }
+
+        $dialogId = intval(Request::input('dialog_id'));
+        $command = trim(Request::input('command', ''));
+
+        // 验证命令
+        if (!in_array($command, ['analyze', 'summarize'])) {
+            return Base::retError('无效的命令');
+        }
+
+        // 验证对话存在
+        $dialog = WebSocketDialog::find($dialogId);
+        if (!$dialog) {
+            return Base::retError('对话不存在');
+        }
+
+        // 检查用户是否在对话中
+        if (!WebSocketDialogUser::whereDialogId($dialogId)->whereUserid($user->userid)->exists()) {
+            return Base::retError('无权限访问此对话');
+        }
+
+        // 检查是否有正在进行的 AI 命令（防止并发）
+        $lockKey = "ai_dialog_command:{$dialogId}";
+        if (Cache::has($lockKey)) {
+            return Base::retError('当前对话正在处理 AI 命令，请稍候再试');
+        }
+
+        // 设置锁，有效期 3 分钟（AI 任务超时时间为 120 秒）
+        Cache::put($lockKey, true, Carbon::now()->addMinutes(3));
+
+        // 发送"正在处理"提示消息（notice 类型，前端自动翻译）
+        $noticeKey = $command === 'analyze' ? '正在分析，请稍候...' : '正在总结，请稍候...';
+        $result = WebSocketDialogMsg::sendMsg(
+            null,
+            $dialogId,
+            'notice',
+            ['notice' => $noticeKey],
+            \App\Module\AiDialogCommand::AI_ASSISTANT_USERID,
+            true,   // push_self
+            false,  // push_retry
+            true    // push_silence
+        );
+        $notifyMsgId = $result['data']->id ?? 0;
+
+        // 投递异步任务
+        Task::deliver(new AiDialogCommandTask($dialogId, $command, $user->userid, $notifyMsgId));
+
+        return Base::retSuccess('命令已接受');
     }
 }

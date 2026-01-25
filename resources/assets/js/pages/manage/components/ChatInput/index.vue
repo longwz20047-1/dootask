@@ -1220,6 +1220,7 @@ export default {
         },
 
         quillMention() {
+            const self = this;
             return {
                 allowedChars: /^\S*$/,
                 mentionDenotationChars: ["@", "#", "~", "%", "/"],
@@ -1255,6 +1256,19 @@ export default {
                         }
                         if (["@", "#", "~", "%"].includes(item.tip)) {
                             this.openMenu(item.tip);
+                        } else if (['/analyze', '/summarize'].includes(item.tip)) {
+                            // AI 命令：调用后端 API
+                            const command = item.tip.slice(1);
+                            $A.apiCall({
+                                url: 'dialog/ai/command',
+                                method: 'post',
+                                data: {
+                                    dialog_id: self.dialogId,
+                                    command: command,
+                                },
+                            }).catch(({msg}) => {
+                                $A.messageError(msg);
+                            });
                         } else {
                             const insertText = item.tip.endsWith(' ') ? item.tip : `${item.tip} `;
                             const insertAt = typeof mentionCharPos === 'number' ? mentionCharPos : (this.quill.getSelection(true)?.index || 0);
@@ -2724,6 +2738,16 @@ export default {
                                 id: 'report',
                                 value: this.$L('工作报告'),
                                 tip: '%',
+                            },
+                            {
+                                id: 'analyze',
+                                value: this.$L('分析'),
+                                tip: '/analyze',
+                            },
+                            {
+                                id: 'summarize',
+                                value: this.$L('总结'),
+                                tip: '/summarize',
                             },
                         ]
                     }];
