@@ -28,19 +28,19 @@ class AiDialogCommand
     /**
      * 执行 /analyze 命令
      */
-    public static function analyze(WebSocketDialog $dialog, int $userId, int $notifyMsgId = 0): void
+    public static function analyze(WebSocketDialog $dialog, int $userId, int $pendingMsgId = 0): void
     {
         $lang = self::getUserLanguage($userId);
 
         switch ($dialog->group_type) {
             case 'task':
-                self::analyzeTask($dialog, $userId, $lang, $notifyMsgId);
+                self::analyzeTask($dialog, $userId, $lang, $pendingMsgId);
                 break;
             case 'project':
-                self::analyzeProject($dialog, $userId, $lang, $notifyMsgId);
+                self::analyzeProject($dialog, $userId, $lang, $pendingMsgId);
                 break;
             default:
-                self::updateNotifyMessage($dialog, $notifyMsgId, '/analyze 命令仅在任务和项目对话中可用', 'error');
+                self::updatePendingMessage($dialog, $pendingMsgId, '❌ /analyze 命令仅在任务和项目对话中可用');
                 break;
         }
     }
@@ -48,19 +48,19 @@ class AiDialogCommand
     /**
      * 执行 /summarize 命令
      */
-    public static function summarize(WebSocketDialog $dialog, int $userId, int $notifyMsgId = 0): void
+    public static function summarize(WebSocketDialog $dialog, int $userId, int $pendingMsgId = 0): void
     {
         $lang = self::getUserLanguage($userId);
 
         switch ($dialog->group_type) {
             case 'task':
-                self::summarizeTask($dialog, $lang, $notifyMsgId);
+                self::summarizeTask($dialog, $lang, $pendingMsgId);
                 break;
             case 'project':
-                self::summarizeProject($dialog, $lang, $notifyMsgId);
+                self::summarizeProject($dialog, $lang, $pendingMsgId);
                 break;
             default:
-                self::summarizeGeneral($dialog, $lang, $notifyMsgId);
+                self::summarizeGeneral($dialog, $lang, $pendingMsgId);
                 break;
         }
     }
@@ -77,11 +77,11 @@ class AiDialogCommand
     /**
      * 分析任务对话 - 复用 AiTaskSuggestion 逻辑
      */
-    private static function analyzeTask(WebSocketDialog $dialog, int $userId, string $lang, int $notifyMsgId): void
+    private static function analyzeTask(WebSocketDialog $dialog, int $userId, string $lang, int $pendingMsgId): void
     {
         $task = ProjectTask::with(['project', 'projectColumn'])->whereDialogId($dialog->id)->first();
         if (!$task) {
-            self::updateNotifyMessage($dialog, $notifyMsgId, '未找到关联的任务', 'error');
+            self::updatePendingMessage($dialog, $pendingMsgId, '❌ 未找到关联的任务');
             return;
         }
 
@@ -109,23 +109,22 @@ class AiDialogCommand
         }
 
         if (empty($suggestions)) {
-            self::updateNotifyMessage($dialog, $notifyMsgId, '当前任务状态良好，暂无建议', 'success');
+            self::updatePendingMessage($dialog, $pendingMsgId, '✅ 当前任务状态良好，暂无建议');
         } else {
-            // 更新提示消息为成功
-            self::updateNotifyMessage($dialog, $notifyMsgId, '分析完成', 'success');
-            // 复用 AiTaskSuggestion 的消息构建和发送逻辑
-            AiTaskSuggestion::sendSuggestionMessage($task, $suggestions);
+            // 构建建议消息内容并更新待处理消息
+            $content = AiTaskSuggestion::buildMarkdownMessage($task->id, $suggestions, $pendingMsgId, $lang);
+            self::updatePendingMessage($dialog, $pendingMsgId, $content, true);
         }
     }
 
     /**
      * 分析项目对话 - 项目健康度分析
      */
-    private static function analyzeProject(WebSocketDialog $dialog, int $userId, string $lang, int $notifyMsgId): void
+    private static function analyzeProject(WebSocketDialog $dialog, int $userId, string $lang, int $pendingMsgId): void
     {
         $project = Project::whereDialogId($dialog->id)->first();
         if (!$project) {
-            self::updateNotifyMessage($dialog, $notifyMsgId, '未找到关联的项目', 'error');
+            self::updatePendingMessage($dialog, $pendingMsgId, '❌ 未找到关联的项目');
             return;
         }
 
@@ -142,20 +141,18 @@ class AiDialogCommand
         ], 120);
 
         if (Base::isError($result)) {
-            self::updateNotifyMessage($dialog, $notifyMsgId, $result['msg'] ?? 'AI 分析失败', 'error');
+            self::updatePendingMessage($dialog, $pendingMsgId, '❌ ' . ($result['msg'] ?? 'AI 分析失败'));
             return;
         }
 
         $content = $result['data']['content'] ?? '';
         if (empty($content)) {
-            self::updateNotifyMessage($dialog, $notifyMsgId, 'AI 未返回有效内容', 'error');
+            self::updatePendingMessage($dialog, $pendingMsgId, '❌ AI 未返回有效内容');
             return;
         }
 
-        // 更新提示消息为成功
-        self::updateNotifyMessage($dialog, $notifyMsgId, '分析完成', 'success');
-        // 发送分析结果
-        self::sendMessage($dialog, $content);
+        // 直接用分析结果更新待处理消息
+        self::updatePendingMessage($dialog, $pendingMsgId, $content, true);
     }
 
     /**
@@ -280,11 +277,11 @@ PROMPT;
     /**
      * 总结任务对话
      */
-    private static function summarizeTask(WebSocketDialog $dialog, string $lang, int $notifyMsgId): void
+    private static function summarizeTask(WebSocketDialog $dialog, string $lang, int $pendingMsgId): void
     {
         $task = ProjectTask::whereDialogId($dialog->id)->first();
         if (!$task) {
-            self::updateNotifyMessage($dialog, $notifyMsgId, '未找到关联的任务', 'error');
+            self::updatePendingMessage($dialog, $pendingMsgId, '❌ 未找到关联的任务');
             return;
         }
 
@@ -292,7 +289,7 @@ PROMPT;
         $messages = self::getRecentMessages($dialog->id, 50);
 
         if (empty($messages)) {
-            self::updateNotifyMessage($dialog, $notifyMsgId, '暂无可供总结的消息记录', 'success');
+            self::updatePendingMessage($dialog, $pendingMsgId, '✅ 暂无可供总结的消息记录');
             return;
         }
 
@@ -306,30 +303,28 @@ PROMPT;
         ], 120);
 
         if (Base::isError($result)) {
-            self::updateNotifyMessage($dialog, $notifyMsgId, $result['msg'] ?? 'AI 总结失败', 'error');
+            self::updatePendingMessage($dialog, $pendingMsgId, '❌ ' . ($result['msg'] ?? 'AI 总结失败'));
             return;
         }
 
         $content = $result['data']['content'] ?? '';
         if (empty($content)) {
-            self::updateNotifyMessage($dialog, $notifyMsgId, 'AI 未返回有效内容', 'error');
+            self::updatePendingMessage($dialog, $pendingMsgId, '❌ AI 未返回有效内容');
             return;
         }
 
-        // 更新提示消息为成功
-        self::updateNotifyMessage($dialog, $notifyMsgId, '总结完成', 'success');
-        // 发送总结结果
-        self::sendMessage($dialog, $content);
+        // 直接用总结结果更新待处理消息
+        self::updatePendingMessage($dialog, $pendingMsgId, $content, true);
     }
 
     /**
      * 总结项目对话
      */
-    private static function summarizeProject(WebSocketDialog $dialog, string $lang, int $notifyMsgId): void
+    private static function summarizeProject(WebSocketDialog $dialog, string $lang, int $pendingMsgId): void
     {
         $project = Project::whereDialogId($dialog->id)->first();
         if (!$project) {
-            self::updateNotifyMessage($dialog, $notifyMsgId, '未找到关联的项目', 'error');
+            self::updatePendingMessage($dialog, $pendingMsgId, '❌ 未找到关联的项目');
             return;
         }
 
@@ -337,7 +332,7 @@ PROMPT;
         $messages = self::getRecentMessages($dialog->id, 50);
 
         if (empty($messages)) {
-            self::updateNotifyMessage($dialog, $notifyMsgId, '暂无可供总结的消息记录', 'success');
+            self::updatePendingMessage($dialog, $pendingMsgId, '✅ 暂无可供总结的消息记录');
             return;
         }
 
@@ -351,32 +346,30 @@ PROMPT;
         ], 120);
 
         if (Base::isError($result)) {
-            self::updateNotifyMessage($dialog, $notifyMsgId, $result['msg'] ?? 'AI 总结失败', 'error');
+            self::updatePendingMessage($dialog, $pendingMsgId, '❌ ' . ($result['msg'] ?? 'AI 总结失败'));
             return;
         }
 
         $content = $result['data']['content'] ?? '';
         if (empty($content)) {
-            self::updateNotifyMessage($dialog, $notifyMsgId, 'AI 未返回有效内容', 'error');
+            self::updatePendingMessage($dialog, $pendingMsgId, '❌ AI 未返回有效内容');
             return;
         }
 
-        // 更新提示消息为成功
-        self::updateNotifyMessage($dialog, $notifyMsgId, '总结完成', 'success');
-        // 发送总结结果
-        self::sendMessage($dialog, $content);
+        // 直接用总结结果更新待处理消息
+        self::updatePendingMessage($dialog, $pendingMsgId, $content, true);
     }
 
     /**
      * 总结普通对话
      */
-    private static function summarizeGeneral(WebSocketDialog $dialog, string $lang, int $notifyMsgId): void
+    private static function summarizeGeneral(WebSocketDialog $dialog, string $lang, int $pendingMsgId): void
     {
         // 获取最近消息
         $messages = self::getRecentMessages($dialog->id, 50);
 
         if (empty($messages)) {
-            self::updateNotifyMessage($dialog, $notifyMsgId, '暂无可供总结的消息记录', 'success');
+            self::updatePendingMessage($dialog, $pendingMsgId, '✅ 暂无可供总结的消息记录');
             return;
         }
 
@@ -390,20 +383,18 @@ PROMPT;
         ], 120);
 
         if (Base::isError($result)) {
-            self::updateNotifyMessage($dialog, $notifyMsgId, $result['msg'] ?? 'AI 总结失败', 'error');
+            self::updatePendingMessage($dialog, $pendingMsgId, '❌ ' . ($result['msg'] ?? 'AI 总结失败'));
             return;
         }
 
         $content = $result['data']['content'] ?? '';
         if (empty($content)) {
-            self::updateNotifyMessage($dialog, $notifyMsgId, 'AI 未返回有效内容', 'error');
+            self::updatePendingMessage($dialog, $pendingMsgId, '❌ AI 未返回有效内容');
             return;
         }
 
-        // 更新提示消息为成功
-        self::updateNotifyMessage($dialog, $notifyMsgId, '总结完成', 'success');
-        // 发送总结结果
-        self::sendMessage($dialog, $content);
+        // 直接用总结结果更新待处理消息
+        self::updatePendingMessage($dialog, $pendingMsgId, $content, true);
     }
 
     /**
@@ -536,50 +527,28 @@ PROMPT;
     }
 
     /**
-     * 发送消息到对话
-     */
-    private static function sendMessage(WebSocketDialog $dialog, string $content): void
-    {
-        WebSocketDialogMsg::sendMsg(
-            null,
-            $dialog->id,
-            'text',
-            ['text' => $content, 'type' => 'md'],
-            self::AI_ASSISTANT_USERID,
-            true,   // push_self
-            false,  // push_retry
-            true    // push_silence
-        );
-    }
-
-    /**
-     * 更新提示消息
+     * 更新待处理消息
      * @param WebSocketDialog $dialog 对话
-     * @param int $notifyMsgId 提示消息ID
+     * @param int $pendingMsgId 待处理消息ID
      * @param string $content 新内容
-     * @param string $status 状态: success/error
+     * @param bool $isMarkdown 是否为 Markdown 格式
      */
-    private static function updateNotifyMessage(WebSocketDialog $dialog, int $notifyMsgId, string $content, string $status): void
+    private static function updatePendingMessage(WebSocketDialog $dialog, int $pendingMsgId, string $content, bool $isMarkdown = false): void
     {
         // 清除并发锁
         self::releaseLock($dialog->id);
 
-        if ($notifyMsgId <= 0) {
-            // 没有提示消息ID，直接发送新消息
-            self::sendMessage($dialog, $content);
-            return;
+        $msg = ['text' => $content];
+        if ($isMarkdown) {
+            $msg['type'] = 'md';
         }
 
-        // 根据状态添加前缀图标
-        $prefix = $status === 'error' ? '❌ ' : '✅ ';
-        $noticeContent = $prefix . $content;
-
-        // 更新消息（不带 source=api，让前端自动翻译）
+        // 更新或发送新消息
         WebSocketDialogMsg::sendMsg(
-            'update-' . $notifyMsgId,
+            $pendingMsgId > 0 ? 'update-' . $pendingMsgId : null,
             $dialog->id,
-            'notice',
-            ['notice' => $noticeContent],
+            'text',
+            $msg,
             self::AI_ASSISTANT_USERID,
             true,   // push_self
             false,  // push_retry

@@ -3610,22 +3610,22 @@ class DialogController extends AbstractController
         // 设置锁，有效期 3 分钟（AI 任务超时时间为 120 秒）
         Cache::put($lockKey, true, Carbon::now()->addMinutes(3));
 
-        // 发送"正在处理"提示消息（notice 类型，前端自动翻译）
-        $noticeKey = $command === 'analyze' ? '正在分析，请稍候...' : '正在总结，请稍候...';
+        // 发送"正在处理"消息（text 类型，完成后会更新此消息）
+        $pendingText = $command === 'analyze' ? '正在分析，请稍候...' : '正在总结，请稍候...';
         $result = WebSocketDialogMsg::sendMsg(
             null,
             $dialogId,
-            'notice',
-            ['notice' => $noticeKey],
+            'text',
+            ['text' => $pendingText],
             \App\Module\AiDialogCommand::AI_ASSISTANT_USERID,
             true,   // push_self
             false,  // push_retry
             true    // push_silence
         );
-        $notifyMsgId = $result['data']->id ?? 0;
+        $pendingMsgId = $result['data']->id ?? 0;
 
         // 投递异步任务
-        Task::deliver(new AiDialogCommandTask($dialogId, $command, $user->userid, $notifyMsgId));
+        Task::deliver(new AiDialogCommandTask($dialogId, $command, $user->userid, $pendingMsgId));
 
         return Base::retSuccess('命令已接受');
     }
