@@ -1256,9 +1256,9 @@ export default {
                         }
                         if (["@", "#", "~", "%"].includes(item.tip)) {
                             this.openMenu(item.tip);
-                        } else if (['/analyze', '/summarize'].includes(item.tip)) {
+                        } else if (['/analyze', '/summarize'].includes(item.value)) {
                             // AI 命令：调用后端 API
-                            const command = item.tip.slice(1);
+                            const command = item.value.slice(1);
                             $A.apiCall({
                                 url: 'dialog/ai/command',
                                 method: 'post',
@@ -2742,13 +2742,13 @@ export default {
                             // /analyze 仅在任务和项目对话中显示
                             ...(['task', 'project'].includes(this.dialogData?.group_type) ? [{
                                 id: 'analyze',
-                                value: this.$L('分析'),
-                                tip: '/analyze',
+                                value: '/analyze',
+                                tip: this.$L('分析'),
                             }] : []),
                             {
                                 id: 'summarize',
-                                value: this.$L('总结'),
-                                tip: '/summarize',
+                                value: '/summarize',
+                                tip: this.$L('总结'),
                             },
                         ]
                     }];
