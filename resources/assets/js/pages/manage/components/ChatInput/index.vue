@@ -1254,8 +1254,8 @@ export default {
                             this.quill.deleteText(mentionCharPos, cursorPos - mentionCharPos, Quill.sources.USER);
                             this.quill.setSelection(mentionCharPos, 0, Quill.sources.USER);
                         }
-                        if (["@", "#", "~", "%"].includes(item.tip)) {
-                            this.openMenu(item.tip);
+                        if (["@", "#", "~", "%"].includes(item.value)) {
+                            this.openMenu(item.value);
                         } else if (['/analyze', '/summarize'].includes(item.value)) {
                             // AI 命令：调用后端 API
                             const command = item.value.slice(1);
@@ -2721,23 +2721,23 @@ export default {
                         list: [
                             {
                                 id: 'mention',
-                                value: this.$L('提及'),
-                                tip: '@',
+                                value: '@',
+                                tip: this.$L('提及'),
                             },
                             {
                                 id: 'task',
-                                value: this.$L('任务'),
-                                tip: '#',
+                                value: '#',
+                                tip: this.$L('任务'),
                             },
                             {
                                 id: 'file',
-                                value: this.$L('文件'),
-                                tip: '~',
+                                value: '~',
+                                tip: this.$L('文件'),
                             },
                             {
                                 id: 'report',
-                                value: this.$L('工作报告'),
-                                tip: '%',
+                                value: '%',
+                                tip: this.$L('工作报告'),
                             },
                             // /analyze 仅在任务和项目对话中显示
                             ...(['task', 'project'].includes(this.dialogData?.group_type) ? [{
