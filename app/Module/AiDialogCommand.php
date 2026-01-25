@@ -543,9 +543,9 @@ PROMPT;
             $msg['type'] = 'md';
         }
 
-        // 更新或发送新消息
+        // 更新或发送新消息（使用 change- 不显示"已编辑"标记）
         WebSocketDialogMsg::sendMsg(
-            $pendingMsgId > 0 ? 'update-' . $pendingMsgId : null,
+            $pendingMsgId > 0 ? 'change-' . $pendingMsgId : null,
             $dialog->id,
             'text',
             $msg,
