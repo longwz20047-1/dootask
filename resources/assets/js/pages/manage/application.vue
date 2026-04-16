@@ -351,10 +351,10 @@
             </div>
         </DrawerOverlay>
 
-        <!--LDAP-->
+        <!--LDAP / 企业微信-->
         <DrawerOverlay v-model="ldapShow" placement="right" :size="700">
             <template v-if="ldapShow" #title>
-                {{ $L('LDAP 设置') }}
+                {{ $L('第三方账号') }}
             </template>
             <div v-if="ldapShow" class="ivu-modal-wrap-apply">
                 <div class="ivu-modal-wrap-apply-body">
@@ -558,7 +558,7 @@ export default {
                 {value: "scan", label: "扫一扫", sort: 130, show: $A.isEEUIApp},
 
                 // 管理员应用
-                {type: 'admin', value: "ldap", label: "LDAP", sort: 160, show: this.userIsAdmin},
+                {type: 'admin', value: "ldap", label: "第三方账号", sort: 160, show: this.userIsAdmin},
                 {type: 'admin', value: "mail", label: "邮件通知", sort: 170, show: this.userIsAdmin},
                 {type: 'admin', value: "appPush", label: "APP 推送", sort: 180, show: this.userIsAdmin},
                 {type: 'admin', value: "complaint", label: "举报管理", sort: 190, show: this.userIsAdmin},

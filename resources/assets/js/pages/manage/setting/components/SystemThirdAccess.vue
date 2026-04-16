@@ -46,6 +46,50 @@
                     </template>
                 </div>
             </div>
+            <div class="block-setting-box">
+                <h3>{{ $L('企业微信') }}</h3>
+                <div class="form-box">
+                    <FormItem :label="$L('启用企微登录')" prop="wecom_open">
+                        <RadioGroup v-model="formData.wecom_open">
+                            <Radio label="open">{{ $L('开启') }}</Radio>
+                            <Radio label="close">{{ $L('关闭') }}</Radio>
+                        </RadioGroup>
+                        <div class="form-tip">{{$L('开启后企微员工可在应用内免密登录 DooTask')}}</div>
+                    </FormItem>
+                    <template v-if="formData.wecom_open === 'open'">
+                        <FormItem :label="$L('企业 CorpID')" prop="wecom_corp_id">
+                            <Input v-model="formData.wecom_corp_id"/>
+                            <div class="form-tip">{{$L('企微管理后台 · 我的企业 · 企业信息 · 企业ID')}}</div>
+                        </FormItem>
+                        <FormItem :label="$L('应用 AgentId')" prop="wecom_agent_id">
+                            <Input v-model="formData.wecom_agent_id" type="number"/>
+                            <div class="form-tip">{{$L('企微管理后台 · 应用管理 · 自建应用 · AgentId')}}</div>
+                        </FormItem>
+                        <FormItem :label="$L('应用 Secret')" prop="wecom_secret">
+                            <Input v-model="formData.wecom_secret" type="password"/>
+                            <div class="form-tip">{{$L('自建应用的 Secret，用于 OAuth 静默登录')}}</div>
+                        </FormItem>
+                        <FormItem :label="$L('通讯录同步 Secret')" prop="wecom_contact_secret">
+                            <Input v-model="formData.wecom_contact_secret" type="password"/>
+                            <div class="form-tip">{{$L('管理工具 · 通讯录同步 · Secret，用于读取成员和部门信息')}}</div>
+                        </FormItem>
+                        <FormItem :label="$L('自动注册')" prop="wecom_auto_reg">
+                            <RadioGroup v-model="formData.wecom_auto_reg">
+                                <Radio label="open">{{ $L('开启') }}</Radio>
+                                <Radio label="close">{{ $L('关闭') }}</Radio>
+                            </RadioGroup>
+                            <div class="form-tip">{{$L('开启后企微员工首次登录自动创建 DooTask 账号')}}</div>
+                        </FormItem>
+                        <FormItem :label="$L('组织架构同步')" prop="wecom_org_sync">
+                            <RadioGroup v-model="formData.wecom_org_sync">
+                                <Radio label="open">{{ $L('开启') }}</Radio>
+                                <Radio label="close">{{ $L('关闭') }}</Radio>
+                            </RadioGroup>
+                            <div class="form-tip">{{$L('开启后可同步企微部门与成员到 DooTask')}}</div>
+                        </FormItem>
+                    </template>
+                </div>
+            </div>
         </Form>
         <div class="setting-footer">
             <Button :loading="loadIng > 0" type="primary" @click="submitForm">{{ $L('提交') }}</Button>
