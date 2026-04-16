@@ -234,7 +234,7 @@ export default {
             }).then(({data}) => {
                 this.$store.dispatch("handleClearCache", data).then(this.goNext);
             }).catch(({msg}) => {
-                $A.modalError(msg || this.$L('企微登录失败'));
+                $A.modalError(msg || '企微登录失败');
             });
         }
     },

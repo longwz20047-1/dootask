@@ -17,6 +17,8 @@ namespace App\Models;
  */
 class UserWecomBinding extends AbstractModel
 {
+    protected $table = 'user_wecom_bindings';
+
     protected $dates = ['last_login_at'];
 
     /**
