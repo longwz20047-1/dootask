@@ -50,6 +50,14 @@ class WecomController extends AbstractController
         return new WecomApiClient($setting['wecom_corp_id'], $secret, 'wecom_contact');
     }
 
+    /**
+     * 获取前端基地址（兼容子路径部署如 /dootask/）
+     */
+    private function frontendUrl(string $hashPath): string
+    {
+        return rtrim(config('app.url'), '/') . "/{$hashPath}";
+    }
+
     // ══════════════════════════════════════
     // OAuth 静默登录
     // ══════════════════════════════════════
@@ -65,13 +73,13 @@ class WecomController extends AbstractController
     public function entry()
     {
         if (Doo::userId() > 0) {
-            return redirect('/');
+            return redirect(config('app.url'));
         }
 
         try {
             $setting = $this->getWecomSetting();
         } catch (ApiException $e) {
-            return redirect("/#/login?wecom_error=" . urlencode(Doo::translate($e->getMessage())));
+            return redirect($this->frontendUrl("#/login?wecom_error=" . urlencode(Doo::translate($e->getMessage()))));
         }
         $client = $this->makeOAuthClient($setting);
 
@@ -99,17 +107,17 @@ class WecomController extends AbstractController
         $state = trim(Request::input('state'));
 
         if (empty($code)) {
-            return redirect("/#/login?wecom_error=" . urlencode(Doo::translate('授权失败：未获取到 code')));
+            return redirect($this->frontendUrl("#/login?wecom_error=" . urlencode(Doo::translate('授权失败：未获取到 code'))));
         }
 
         if (!Cache::pull("wecom_state:{$state}")) {
-            return redirect("/#/login?wecom_error=" . urlencode(Doo::translate('授权失败：state 验证失败')));
+            return redirect($this->frontendUrl("#/login?wecom_error=" . urlencode(Doo::translate('授权失败：state 验证失败'))));
         }
 
         try {
             $setting = $this->getWecomSetting();
         } catch (ApiException $e) {
-            return redirect("/#/login?wecom_error=" . urlencode(Doo::translate($e->getMessage())));
+            return redirect($this->frontendUrl("#/login?wecom_error=" . urlencode(Doo::translate($e->getMessage()))));
         }
         $client = $this->makeOAuthClient($setting);
         $corpId = $setting['wecom_corp_id'];
@@ -117,12 +125,12 @@ class WecomController extends AbstractController
         try {
             $userInfo = $client->getUserInfoByCode($code);
         } catch (\Throwable $e) {
-            return redirect("/#/login?wecom_error=" . urlencode(Doo::translate('授权失败') . ': ' . $e->getMessage()));
+            return redirect($this->frontendUrl("#/login?wecom_error=" . urlencode(Doo::translate('授权失败') . ': ' . $e->getMessage())));
         }
 
         $wecomUserId = $userInfo['userid'] ?? '';
         if (empty($wecomUserId)) {
-            return redirect("/#/login?wecom_error=" . urlencode(Doo::translate('非企业成员，无法登录')));
+            return redirect($this->frontendUrl("#/login?wecom_error=" . urlencode(Doo::translate('非企业成员，无法登录'))));
         }
 
         $binding = UserWecomBinding::findByWecom($corpId, $wecomUserId);
@@ -130,18 +138,18 @@ class WecomController extends AbstractController
         if ($binding) {
             $user = User::whereUserid($binding->userid)->first();
             if (!$user || $user->isDisable()) {
-                return redirect("/#/login?wecom_error=" . urlencode(Doo::translate('账号已停用或不存在')));
+                return redirect($this->frontendUrl("#/login?wecom_error=" . urlencode(Doo::translate('账号已停用或不存在'))));
             }
             $binding->last_login_at = Carbon::now();
             $binding->save();
         } else {
             if (($setting['wecom_auto_reg'] ?? 'close') !== 'open') {
-                return redirect("/#/login?wecom_error=" . urlencode(Doo::translate('未绑定 DooTask 账号，且未开启自动注册')));
+                return redirect($this->frontendUrl("#/login?wecom_error=" . urlencode(Doo::translate('未绑定 DooTask 账号，且未开启自动注册'))));
             }
             try {
                 $user = $this->silentRegister($setting, $corpId, $wecomUserId);
             } catch (\Throwable $e) {
-                return redirect("/#/login?wecom_error=" . urlencode(Doo::translate('注册失败') . ': ' . $e->getMessage()));
+                return redirect($this->frontendUrl("#/login?wecom_error=" . urlencode(Doo::translate('注册失败') . ': ' . $e->getMessage())));
             }
         }
 
@@ -157,11 +165,8 @@ class WecomController extends AbstractController
         $token = User::generateToken($user);
 
         $ticket = Str::random(64);
-        Cache::put("wecom_ticket:{$ticket}", [
-            'userid' => $user->userid,
-            'token' => $token,
-        ], 60);
-        return redirect("/#/login?wecom_ticket={$ticket}");
+        Cache::put("wecom_ticket:{$ticket}", $user->toArray() + ['token' => $token], 60);
+        return redirect($this->frontendUrl("#/login?wecom_ticket={$ticket}"));
     }
 
     /**

@@ -640,7 +640,7 @@ class SystemController extends AbstractController
         $setting['wecom_agent_id'] = $setting['wecom_agent_id'] ?: '';
         $setting['wecom_secret'] = $setting['wecom_secret'] ?: '';
         $setting['wecom_contact_secret'] = $setting['wecom_contact_secret'] ?: '';
-        $setting['wecom_auto_reg'] = $setting['wecom_auto_reg'] ?: 'open';
+        $setting['wecom_auto_reg'] = $setting['wecom_auto_reg'] ?: 'close';
         $setting['wecom_org_sync'] = $setting['wecom_org_sync'] ?: 'close';
         //
         return Base::retSuccess($type == 'save' ? '保存成功' : 'success', $setting ?: json_decode('{}'));

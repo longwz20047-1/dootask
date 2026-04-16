@@ -28,7 +28,7 @@ class WecomApiClient
      */
     public function getAccessToken(): string
     {
-        $cacheKey = "{$this->cachePrefix}_token_{$this->corpId}_{$this->secret}";
+        $cacheKey = "{$this->cachePrefix}_token_{$this->corpId}_" . md5($this->secret);
         return Cache::remember($cacheKey, 7000, function () {
             $url = self::BASE_URL . '/gettoken?' . http_build_query([
                 'corpid' => $this->corpId,

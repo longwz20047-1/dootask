@@ -112,7 +112,11 @@ class WecomOrgSyncService
                         $changed = true;
                     }
                     if ($changed) {
-                        $dootaskDept->save();
+                        $dootaskDept->saveDepartment([
+                            'name' => $deptName,
+                            'parent_id' => $dootaskParentId,
+                            'owner_userid' => $ownerUserid ?: $dootaskDept->owner_userid,
+                        ], 0);
                         $stats['updated']++;
                     } else {
                         $stats['skipped']++;
