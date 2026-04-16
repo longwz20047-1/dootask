@@ -612,7 +612,15 @@ class SystemController extends AbstractController
                     'ldap_password',
                     'ldap_user_dn',
                     'ldap_base_dn',
-                    'ldap_sync_local'
+                    'ldap_sync_local',
+                    // 企业微信
+                    'wecom_open',
+                    'wecom_corp_id',
+                    'wecom_agent_id',
+                    'wecom_secret',
+                    'wecom_contact_secret',
+                    'wecom_auto_reg',
+                    'wecom_org_sync',
                 ])) {
                     unset($all[$key]);
                 }
@@ -626,6 +634,14 @@ class SystemController extends AbstractController
         $setting['ldap_open'] = $setting['ldap_open'] ?: 'close';
         $setting['ldap_port'] = intval($setting['ldap_port']) ?: 389;
         $setting['ldap_sync_local'] = $setting['ldap_sync_local'] ?: 'close';
+        // 企业微信配置
+        $setting['wecom_open'] = $setting['wecom_open'] ?: 'close';
+        $setting['wecom_corp_id'] = $setting['wecom_corp_id'] ?: '';
+        $setting['wecom_agent_id'] = $setting['wecom_agent_id'] ?: '';
+        $setting['wecom_secret'] = $setting['wecom_secret'] ?: '';
+        $setting['wecom_contact_secret'] = $setting['wecom_contact_secret'] ?: '';
+        $setting['wecom_auto_reg'] = $setting['wecom_auto_reg'] ?: 'open';
+        $setting['wecom_org_sync'] = $setting['wecom_org_sync'] ?: 'close';
         //
         return Base::retSuccess($type == 'save' ? '保存成功' : 'success', $setting ?: json_decode('{}'));
     }

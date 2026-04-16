@@ -67,6 +67,9 @@ Route::prefix('api')->middleware(['webapi'])->group(function () {
     // 测试
     Route::any('test/{method}',                     TestController::class);
     Route::any('test/{method}/{action}',            TestController::class);
+    // 企业微信
+    Route::any('wecom/{method}',                    \App\Http\Controllers\Api\WecomController::class);
+    Route::any('wecom/{method}/{action}',           \App\Http\Controllers\Api\WecomController::class);
 });
 
 /**

@@ -215,6 +215,26 @@ export default {
         this.qrcodeTimer = setInterval(this.qrcodeStatus, 2000);
         //
         emitter.on('useSSOLogin', this.inputServerUrl);
+        //
+        // ── 企微 OAuth 回调处理 ──
+        const urlParams = $A.urlParameterAll();
+        if (urlParams.wecom_error) {
+            $A.modalError({content: decodeURIComponent(urlParams.wecom_error), language: false});
+            const cleanUrl = window.location.href.replace(/[?&]wecom_error=[^&]*/, '');
+            window.history.replaceState(null, '', cleanUrl);
+        }
+        if (urlParams.wecom_ticket) {
+            const cleanUrl = window.location.href.replace(/[?&]wecom_ticket=[^&]*/, '');
+            window.history.replaceState(null, '', cleanUrl);
+            this.$store.dispatch("call", {
+                url: "wecom/exchange",
+                data: { ticket: urlParams.wecom_ticket },
+            }).then(({data}) => {
+                this.$store.dispatch("handleClearCache", data).then(this.goNext);
+            }).catch(({msg}) => {
+                $A.modalError({content: msg || "企微登录失败", language: false});
+            });
+        }
     },
 
     beforeDestroy() {
