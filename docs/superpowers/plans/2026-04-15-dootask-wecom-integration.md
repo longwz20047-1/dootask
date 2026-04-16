@@ -328,8 +328,13 @@ class WecomApiClient
                 'corpid' => $this->corpId,
                 'corpsecret' => $this->secret,
             ]);
-            // [Round-2 P1-8] 使用 Ihttp 替代 Http facade，与 DooTask 现有风格一致
-            $resp = json_decode(Ihttp::ihttp_get($url)['content'] ?? '{}', true);
+            // [Round-3 R3-1/R3-2 修复] Ihttp 返回 ['data'] 非 ['content']，需先 isError 检查
+            // 参照 AI.php:115-119 的正确用法
+            $result = Ihttp::ihttp_get($url);
+            if (Base::isError($result)) {
+                throw new ApiException(Doo::translate('企微获取 token 失败') . ': ' . ($result['msg'] ?? 'network error'));
+            }
+            $resp = json_decode($result['data'], true);
             if (($resp['errcode'] ?? -1) !== 0) {
                 throw new ApiException(Doo::translate('企微获取 token 失败') . ': ' . ($resp['errmsg'] ?? 'unknown'));
             }
@@ -344,7 +349,11 @@ class WecomApiClient
     {
         $params['access_token'] = $this->getAccessToken();
         $url = self::BASE_URL . $path . '?' . http_build_query($params);
-        $resp = json_decode(Ihttp::ihttp_get($url)['content'] ?? '{}', true);
+        $result = Ihttp::ihttp_get($url);
+        if (Base::isError($result)) {
+            throw new ApiException("企微 API 请求失败 [{$path}]: " . ($result['msg'] ?? 'network error'));
+        }
+        $resp = json_decode($result['data'], true);
         if (($resp['errcode'] ?? -1) !== 0) {
             throw new ApiException("企微 API 错误 [{$path}]: {$resp['errcode']} {$resp['errmsg']}");
         }
@@ -359,10 +368,11 @@ class WecomApiClient
         $token = $this->getAccessToken();
         $url = self::BASE_URL . $path . '?access_token=' . $token;
         $headers = ['Content-Type' => 'application/json'];
-        $resp = json_decode(
-            Ihttp::ihttp_request($url, json_encode($data), $headers)['content'] ?? '{}',
-            true
-        );
+        $result = Ihttp::ihttp_request($url, json_encode($data), $headers);
+        if (Base::isError($result)) {
+            throw new ApiException("企微 API 请求失败 [{$path}]: " . ($result['msg'] ?? 'network error'));
+        }
+        $resp = json_decode($result['data'], true);
         if (($resp['errcode'] ?? -1) !== 0) {
             throw new ApiException("企微 API 错误 [{$path}]: {$resp['errcode']} {$resp['errmsg']}");
         }
@@ -884,6 +894,17 @@ class WecomController extends AbstractController
 
         $user->save();
 
+        // [Round-3 R3-4 修复] reg_identity='temp' 策略：与 User::reg() 保持一致
+        $regIdentity = Base::settingFind('system', 'reg_identity') ?: 'normal';
+        if ($regIdentity === 'temp') {
+            $identityArr = is_array($user->identity) ? $user->identity : [];
+            if (!in_array('temp', $identityArr)) {
+                $identityArr[] = 'temp';
+                $user->identity = ',' . implode(',', $identityArr) . ',';
+                $user->save();
+            }
+        }
+
         // 加入全员群组（参照 User::reg() 逻辑）
         $all_group_autoin = Base::settingFind('system', 'all_group_autoin') ?: 'yes';
         if ($all_group_autoin === 'yes') {
@@ -1331,6 +1352,35 @@ class WecomOrgSyncService
         }
 
         $user->save();
+
+        // [Round-3 R3-4 修复] reg_identity='temp' 策略：与 User::reg() 保持一致
+        // 如果管理员设置新用户默认为临时身份，企微用户也应遵守
+        $regIdentity = Base::settingFind('system', 'reg_identity') ?: 'normal';
+        if ($regIdentity === 'temp') {
+            $identityArr = is_array($user->identity) ? $user->identity : [];
+            if (!in_array('temp', $identityArr)) {
+                $identityArr[] = 'temp';
+                $user->identity = ',' . implode(',', $identityArr) . ',';
+                $user->save();
+            }
+        }
+
+        // [Round-3 R3-3 修复] 补全 User::reg() 的三个关键副作用
+        // 参照 User.php:413-423
+
+        // 1. 加入全员群
+        if (Base::settingFind('system', 'all_group_autoin') === 'yes') {
+            $allDialog = \App\Models\WebSocketDialog::whereGroupType('all')->orderByDesc('id')->first();
+            if ($allDialog) {
+                $allDialog->joinGroup($user->userid, 0);
+            }
+        }
+
+        // 2. Manticore 搜索索引同步（否则用户在 DooTask 搜索中不可见）
+        \App\Observers\AbstractObserver::taskDeliver(new \App\Tasks\ManticoreSyncTask('user_sync', $user->toArray()));
+
+        // 3. user_onboard Hook（通知 appstore 等下游应用）
+        \App\Module\Apps::dispatchUserHook($user, 'user_onboard', 'onboard');
 
         // 绑定
         $binding = UserWecomBinding::createInstance([
@@ -1958,3 +2008,18 @@ ticket 无效或已过期
 | R2-11 | P2 | `owner_userid=0` 时 `createGroup` 创建无成员空群，部门页 UX 异常 | 建议：延迟创建群或用 system bot 占位。当前"接受首次为 0"的注释仍有效 | 📝 可接受 |
 | R2-12 | P2 | `user_departments.name` varchar(100)，超长企微部门名被截断 | 已加 `mb_substr($deptName, 0, 100)` | ✅ 已修复 Task 8 |
 | R2-13 | P2 | `saveDepartment` 内嵌 `createGroup` 形成嵌套事务，MySQL savepoint 回滚语义未验证 | 已通过去掉降级 save() 缓解：失败整体跳过，不写半成品 | ✅ 间接修复 |
+
+### Round-3 反问反证审查修复记录（2026-04-16）
+
+> 3 专家魔鬼辩护：silentRegister 副作用完整性、Ihttp 替换正确性、ticket 安全性。
+
+| # | 级别 | 问题 | 修复 | 状态 |
+|---|------|------|------|------|
+| R3-1 | **P0** | `WecomApiClient` 中 `Ihttp` 返回值用 `['content']`，实际应为 `['data']`（参照 `AI.php:115`）。所有 API 调用 100% 失败 | 三个方法全部改为 `$result['data']` | ✅ 已修复 |
+| R3-2 | **P0** | 缺少 `Base::isError($result)` 前置检查，网络失败时 `json_decode([], true)` 产生 PHP Warning + 误导性错误信息 | 三个方法全部加 `Base::isError()` 检查，失败时抛含真实 cURL 错误的 ApiException | ✅ 已修复 |
+| R3-3 | **P1** | `syncUsers()` → `createUserFromWecom()` 缺少三个关键副作用：全员群加入、ManticoreSyncTask、user_onboard hook。批量同步的用户搜索不到、不在全员群、appstore 不知道 | 在 `createUserFromWecom()` 的 `$user->save()` 后补全三个副作用 | ✅ 已修复 |
+| R3-4 | **P1** | `silentRegister` 和 `createUserFromWecom` 均未执行 `reg_identity='temp'` 策略。当系统配置新用户为临时身份时，企微用户绕过限制直接获得正式权限 | 两条路径均补上 `reg_identity` 检查，与 `User::reg()` 保持一致 | ✅ 已修复 |
+| R3-5 | 🛡️ | ticket 机制安全性确认：381 bits 熵不可暴力破解，同源策略阻止跨域读取，60秒+一次性消费有效 | — | ✅ 安全 |
+| R3-6 | ⚠️ | `Cache::pull` 非原子（GET+DEL 非 Lua 脚本），理论 double-spend | 风险极低（需同一 ticket 毫秒级并发），可接受 | 📝 已知风险 |
+| R3-7 | ⚠️ | `Ihttp` 全局禁用 SSL 验证（`CURLOPT_SSL_VERIFYPEER=false`），比 `Http` facade 安全性低 | DooTask 全局既有行为，非本次引入。与项目风格一致的代价 | 📝 已知风险 |
+| R3-8 | ⚠️ | exchange 端点无 rate limit（DoS 向量） | 建议给 wecom 路由加 `throttle` middleware，但 ticket 381 bits 熵使暴力枚举不可能 | 📝 建议实施时处理 |
