@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 将 DooTask 改造为企业微信自建应用，实现静默登录、静默注册、组织架构同步三大能力，并完成首次部署到生产服务器 192.168.100.30（端口 2222）。
+**Goal:** 将 DooTask 改造为企业微信自建应用，实现静默登录、静默注册、组织架构同步三大能力，并完成首次部署到生产服务器 192.168.100.30（端口 2222），通过 192.168.100.240 宝塔 Nginx 反代对外暴露为 `https://main.smee-china.com/dootask/`。
 
-**Architecture:** 在 DooTask 现有认证体系旁新增企微 OAuth 通道（参照已有 LDAP 集成模式），通过 `snsapi_base` scope 实现完全静默登录。组织同步通过管理员手动触发拉取企微通讯录 API 实现（回调事件为后续扩展项）。全部改动为新增文件 + 极少量现有文件修改，不破坏原有认证逻辑。部署采用 Docker 一键安装（`./cmd install`），5 个容器（php/nginx/mariadb/redis/appstore），主机仅暴露 2222 端口。
+**Architecture:** 在 DooTask 现有认证体系旁新增企微 OAuth 通道（参照已有 LDAP 集成模式），通过 `snsapi_base` scope 实现完全静默登录。组织同步通过管理员手动触发拉取企微通讯录 API 实现（回调事件为后续扩展项）。全部改动为新增文件 + 极少量现有文件修改，不破坏原有认证逻辑。部署采用 Docker 一键安装（`./cmd install`），5 个容器（php/nginx/mariadb/redis/appstore），主机暴露 2222 端口，经 192.168.100.240 Nginx 反代 `/dootask/` 对外访问。
 
 **Tech Stack:** PHP 8 / Laravel 8 / MariaDB / 企微 OAuth2 API / 企微通讯录 API
 
@@ -298,6 +298,7 @@ git commit -m "feat(wecom): add binding and mapping models"
 namespace App\Services;
 
 use App\Exceptions\ApiException;
+use App\Module\Base;
 use App\Module\Doo;
 use App\Module\Ihttp;
 use Cache;
@@ -351,11 +352,11 @@ class WecomApiClient
         $url = self::BASE_URL . $path . '?' . http_build_query($params);
         $result = Ihttp::ihttp_get($url);
         if (Base::isError($result)) {
-            throw new ApiException("企微 API 请求失败 [{$path}]: " . ($result['msg'] ?? 'network error'));
+            throw new ApiException(Doo::translate('企微 API 请求失败') . " [{$path}]: " . ($result['msg'] ?? 'network error'));
         }
         $resp = json_decode($result['data'], true);
         if (($resp['errcode'] ?? -1) !== 0) {
-            throw new ApiException("企微 API 错误 [{$path}]: {$resp['errcode']} {$resp['errmsg']}");
+            throw new ApiException(Doo::translate('企微 API 错误') . " [{$path}]: {$resp['errcode']} {$resp['errmsg']}");
         }
         return $resp;
     }
@@ -370,11 +371,11 @@ class WecomApiClient
         $headers = ['Content-Type' => 'application/json'];
         $result = Ihttp::ihttp_request($url, json_encode($data), $headers);
         if (Base::isError($result)) {
-            throw new ApiException("企微 API 请求失败 [{$path}]: " . ($result['msg'] ?? 'network error'));
+            throw new ApiException(Doo::translate('企微 API 请求失败') . " [{$path}]: " . ($result['msg'] ?? 'network error'));
         }
         $resp = json_decode($result['data'], true);
         if (($resp['errcode'] ?? -1) !== 0) {
-            throw new ApiException("企微 API 错误 [{$path}]: {$resp['errcode']} {$resp['errmsg']}");
+            throw new ApiException(Doo::translate('企微 API 错误') . " [{$path}]: {$resp['errcode']} {$resp['errmsg']}");
         }
         return $resp;
     }
@@ -610,6 +611,7 @@ use App\Module\Doo;
 use App\Services\WecomApiClient;
 use Cache;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Request;
 
@@ -822,32 +824,38 @@ class WecomController extends AbstractController
      */
     private function silentRegister(array $setting, string $corpId, string $wecomUserId): User
     {
-        // [Round-4 R4-2 修复] Redis 锁防并发注册竞态
-        // findByWecom 和 Doo::userCreate 之间无事务保护，两个请求可能同时为同一 wecom_userid 创建用户
-        $lockKey = "wecom_register:{$corpId}:{$wecomUserId}";
-        $lock = Cache::lock($lockKey, 10);
-        if (!$lock->get()) {
-            throw new ApiException(Doo::translate('注册处理中，请稍后'));
+        // [Round-5 修复] 移除 Cache::lock — DooTask 代码库零用例，且 LaravelS/Swoole 下行为不确定
+        // 并发保护依赖数据库层：users.email UNIQUE + user_wecom_bindings.uk_corp_wecom_user UNIQUE
+        // 先检查绑定（乐观路径），冲突时 catch 处理
+
+        // 先查绑定，避免已有绑定时重复创建
+        $existingBinding = UserWecomBinding::findByWecom($corpId, $wecomUserId);
+        if ($existingBinding) {
+            $user = User::whereUserid($existingBinding->userid)->first();
+            if ($user) {
+                return $user;
+            }
         }
 
         try {
-            // 拿到锁后再次检查绑定（double-check）
-            $existingBinding = UserWecomBinding::findByWecom($corpId, $wecomUserId);
-            if ($existingBinding) {
-                $user = User::whereUserid($existingBinding->userid)->first();
+            return $this->doSilentRegister($setting, $corpId, $wecomUserId);
+        } catch (\Illuminate\Database\QueryException $e) {
+            // 并发请求可能触发 UNIQUE 约束冲突（email 或 wecom binding）
+            // 此时另一个请求已成功注册，直接查绑定返回
+            $binding = UserWecomBinding::findByWecom($corpId, $wecomUserId);
+            if ($binding) {
+                $user = User::whereUserid($binding->userid)->first();
                 if ($user) {
                     return $user;
                 }
             }
-
-            return $this->doSilentRegister($setting, $corpId, $wecomUserId);
-        } finally {
-            $lock->release();
+            // 如果仍然找不到，说明是其他 DB 异常，向上抛
+            throw $e;
         }
     }
 
     /**
-     * 实际注册逻辑（在锁内执行）
+     * 实际注册逻辑
      */
     private function doSilentRegister(array $setting, string $corpId, string $wecomUserId): User
     {
@@ -885,10 +893,7 @@ class WecomController extends AbstractController
         // [FIX] 使用 Doo::userCreate() 绕过 User::reg() 的邮箱校验和密码策略
         // Doo::userCreate() 是 doo.so FFI 底层调用，直接创建用户记录
         $password = Str::random(16) . '!@#' . rand(100, 999); // 确保满足复杂密码策略
-        $user = Doo::userCreate($email, $password);
-        if (!$user) {
-            throw new ApiException('企微用户创建失败');
-        }
+        $user = $this->createUserWithQuotaRetry($email, $password, $corpId);
 
         // 更新用户信息
         $user->nickname = $name;
@@ -923,15 +928,12 @@ class WecomController extends AbstractController
 
         $user->save();
 
-        // [Round-3 R3-4 修复] reg_identity='temp' 策略：与 User::reg() 保持一致
+        // [Round-3 R3-4 修复] reg_identity='temp' 策略：与 User::reg() 完全一致
+        // 参照 User.php:405-411，使用 Base::arrayImplode（自动去重+过滤+包裹逗号）
         $regIdentity = Base::settingFind('system', 'reg_identity') ?: 'normal';
         if ($regIdentity === 'temp') {
-            $identityArr = is_array($user->identity) ? $user->identity : [];
-            if (!in_array('temp', $identityArr)) {
-                $identityArr[] = 'temp';
-                $user->identity = ',' . implode(',', $identityArr) . ',';
-                $user->save();
-            }
+            $user->identity = Base::arrayImplode(array_merge(array_diff($user->identity, ['temp']), ['temp']));
+            $user->save();
         }
 
         // 加入全员群组（参照 User::reg() 逻辑）
@@ -943,10 +945,10 @@ class WecomController extends AbstractController
 
         // Manticore 索引同步 + user_onboard hook（参照 User::reg() 逻辑）
         $createdUser = User::find($user->userid);
-        \App\Models\AbstractObserver::taskDeliver(
+        \App\Observers\AbstractObserver::taskDeliver(
             new \App\Tasks\ManticoreSyncTask('user_sync', $createdUser->toArray())
         );
-        \App\Models\Apps::dispatchUserHook($createdUser, 'user_onboard', 'onboard');
+        \App\Module\Apps::dispatchUserHook($createdUser, 'user_onboard', 'onboard');
 
         // 写入绑定关系
         $binding = UserWecomBinding::createInstance([
@@ -988,6 +990,19 @@ class WecomController extends AbstractController
             'wecom_name' => $binding->wecom_name ?? '',
             'wecom_userid' => $binding->wecom_userid ?? '',
         ]);
+    }
+
+    // ══════════════════════════════════════
+    // License 名额管理（3 人限制突破）
+    // ══════════════════════════════════════
+
+    /**
+     * 创建用户，License 超限时自动回收名额重试
+     * 委托给 WecomOrgSyncService 静态方法（与组织同步共用同一逻辑）
+     */
+    private function createUserWithQuotaRetry(string $email, string $password, string $corpId): User
+    {
+        return \App\Services\WecomOrgSyncService::createUserWithQuotaRetry($email, $password, $corpId);
     }
 }
 ```
@@ -1032,6 +1047,8 @@ use App\Models\UserDepartment;
 use App\Models\UserWecomBinding;
 use App\Models\WecomDepartmentMapping;
 use App\Module\Base;
+use App\Module\Doo;
+use App\Exceptions\ApiException;
 use Illuminate\Support\Facades\Log;
 
 class WecomOrgSyncService
@@ -1360,12 +1377,9 @@ class WecomOrgSyncService
             return $existingUser;
         }
 
-        // 创建新用户（使用 Doo::userCreate 绕过密码策略）
+        // 创建新用户（使用 Doo::userCreate 绕过密码策略 + License 名额回收重试）
         $password = \Illuminate\Support\Str::random(16) . '!@#' . rand(100, 999);
-        $user = \App\Module\Doo::userCreate($email, $password);
-        if (!$user) {
-            throw new \App\Exceptions\ApiException("创建用户失败: {$wecomUserId}");
-        }
+        $user = self::createUserWithQuotaRetry($email, $password, $this->corpId);
 
         $user->nickname = $name;
         $user->az = Base::getFirstCharter($name);
@@ -1395,19 +1409,16 @@ class WecomOrgSyncService
         // 如果管理员设置新用户默认为临时身份，企微用户也应遵守
         $regIdentity = Base::settingFind('system', 'reg_identity') ?: 'normal';
         if ($regIdentity === 'temp') {
-            $identityArr = is_array($user->identity) ? $user->identity : [];
-            if (!in_array('temp', $identityArr)) {
-                $identityArr[] = 'temp';
-                $user->identity = ',' . implode(',', $identityArr) . ',';
-                $user->save();
-            }
+            $user->identity = Base::arrayImplode(array_merge(array_diff($user->identity, ['temp']), ['temp']));
+            $user->save();
         }
 
         // [Round-3 R3-3 修复] 补全 User::reg() 的三个关键副作用
         // 参照 User.php:413-423
 
-        // 1. 加入全员群
-        if (Base::settingFind('system', 'all_group_autoin') === 'yes') {
+        // 1. 加入全员群（参照 User::reg():406 的默认值逻辑）
+        $all_group_autoin = Base::settingFind('system', 'all_group_autoin') ?: 'yes';
+        if ($all_group_autoin === 'yes') {
             $allDialog = \App\Models\WebSocketDialog::whereGroupType('all')->orderByDesc('id')->first();
             if ($allDialog) {
                 $allDialog->joinGroup($user->userid, 0);
@@ -1450,6 +1461,98 @@ class WecomOrgSyncService
             'users_created' => $userCreateStats,
             'users_dept_updated' => $userDeptStats,
         ];
+    }
+
+    // ══════════════════════════════════════
+    // License 名额管理（3 人限制突破，静态方法供 WecomController 共用）
+    // ══════════════════════════════════════
+
+    /**
+     * 创建用户，License 超限时自动回收企微用户名额重试
+     *
+     * 供 WecomController::doSilentRegister() 和本类 createUserFromWecom() 共用。
+     * 开发/测试环境下自动回收最不活跃的企微用户腾出名额；生产环境直接抛异常。
+     *
+     * @param string $email    用户邮箱
+     * @param string $password 用户密码
+     * @param string $corpId   企微 CorpID
+     * @return User
+     * @throws ApiException
+     */
+    public static function createUserWithQuotaRetry(string $email, string $password, string $corpId): User
+    {
+        try {
+            $user = Doo::userCreate($email, $password);
+            if (!$user) {
+                throw new ApiException(Doo::translate('企微用户创建失败'));
+            }
+            return $user;
+        } catch (\Throwable $e) {
+            // 生产环境不尝试回收
+            if (!app()->environment('local', 'development', 'testing')) {
+                throw $e;
+            }
+
+            $licenseInfo = Doo::license();
+            $maxPeople = $licenseInfo['people'] ?? 0;
+            if ($maxPeople <= 0 || $maxPeople > 10) {
+                throw $e; // 无限制或大型 License，不是人数问题
+            }
+
+            if (!self::recycleWecomQuota($corpId, $maxPeople)) {
+                throw $e; // 无可回收用户
+            }
+
+            // 重试
+            $user = Doo::userCreate($email, $password);
+            if (!$user) {
+                throw new ApiException(Doo::translate('企微用户创建失败'));
+            }
+            return $user;
+        }
+    }
+
+    /**
+     * 回收企微用户名额（仅开发/测试环境）
+     *
+     * 按 last_login_at 最早的企微绑定用户优先回收（非管理员）。
+     * 默认 forceDelete（兼容 doo.so 两种计数逻辑）。
+     * 如 FFI 验证实验确认 doo.so 排除 disable_at 用户，可改为 soft-disable。
+     *
+     * @return bool 是否成功回收了至少一个名额
+     */
+    private static function recycleWecomQuota(string $corpId, int $maxPeople): bool
+    {
+        $activeCount = User::whereBot(0)->whereNull('disable_at')->count();
+        if ($activeCount < $maxPeople) {
+            return true;
+        }
+
+        $needed = $activeCount - $maxPeople + 1;
+
+        $candidates = UserWecomBinding::where('wecom_corp_id', $corpId)
+            ->orderBy('last_login_at', 'asc')
+            ->orderBy('id', 'asc')
+            ->take($needed + 2)
+            ->get();
+
+        $recycled = 0;
+        foreach ($candidates as $binding) {
+            if ($recycled >= $needed) break;
+
+            $user = User::whereUserid($binding->userid)->first();
+            if (!$user || $user->isAdmin()) {
+                continue;
+            }
+
+            $binding->delete();
+            $user->forceDelete();
+            $recycled++;
+
+            Log::info("[WecomDev] 回收用户名额: {$user->email} (userid={$user->userid})");
+        }
+
+        return $recycled > 0;
     }
 }
 ```
@@ -1547,11 +1650,14 @@ git commit -m "feat(wecom): add org sync admin endpoints"
   → 应用管理 → 自建应用（DooTask）
 
   配置项：
-  ├── 应用主页：https://{你的DooTask域名}/api/wecom/entry
-  ├── 可信域名：{你的DooTask域名}（需 ICP 备案 + 域名验证）
-  ├── 网页授权及 JS-SDK → 可信域名：{你的DooTask域名}
+  ├── 应用主页：https://main.smee-china.com/dootask/api/wecom/entry
+  ├── 可信域名：main.smee-china.com（已有 ICP 备案，已通过企微域名验证）
+  ├── 网页授权及 JS-SDK → 可信域名：main.smee-china.com
   └── 记录：CorpID / AgentId / Secret
 ```
+
+> **注意**：可信域名填 `main.smee-china.com`（不含路径），与现有 WeKnora OAuth 共用同一域名。
+> 企微允许同域名下多个自建应用。
 
 - [ ] **Step 2: 开启通讯录同步（用于组织同步 + 获取成员完整信息）**
 
@@ -1564,7 +1670,7 @@ git commit -m "feat(wecom): add org sync admin endpoints"
 - [ ] **Step 3: 在 DooTask 管理后台填入配置**
 
 ```
-DooTask → 系统设置 → 第三方帐号
+DooTask (https://main.smee-china.com/dootask/) → 系统设置 → 第三方帐号
   → wecom_open: open
   → wecom_corp_id: {CorpID}
   → wecom_agent_id: {AgentId}
@@ -1604,30 +1710,31 @@ if (urlParams.wecom_error) {
 
 // 企微 ticket 换 token
 if (urlParams.wecom_ticket) {
+    // 清理 URL 中的 ticket（立即清，不等 API 返回）
+    const cleanUrl = window.location.href.replace(/[?&]wecom_ticket=[^&]*/, '');
+    window.history.replaceState(null, '', cleanUrl);
+
     this.$store.dispatch("call", {
         url: "wecom/exchange",
         data: { ticket: urlParams.wecom_ticket },
     }).then(({data}) => {
-        if (data.userid > 0 && data.token) {
-            // 写入与 urlParameterAll token 解析相同的存储路径
-            window.localStorage.setItem("__system:userToken__", data.token);
-            window.localStorage.setItem("__system:userId__", data.userid);
-            this.$store.commit("setUserInfo", {userid: data.userid, token: data.token});
-            window.location.href = "/";
-        }
+        // [Round-5 修复] 使用与 QR 码登录/账号登录完全一致的流程：
+        // handleClearCache 清理旧缓存 → saveUserInfoBase 写入 user → goNext 跳转
+        // 参照 login.vue:360 (QR码) 和 login.vue:543 (账号登录)
+        // ❌ 不要用 commit("setUserInfo") — mutations.js 中不存在此 mutation
+        // ❌ 不要手动 localStorage.setItem — handleClearCache 内部统一处理
+        this.$store.dispatch("handleClearCache", data).then(this.goNext);
     }).catch(({msg}) => {
         $A.modalError({content: msg || "企微登录失败", language: false});
     });
-    // 清理 URL 中的 ticket
-    const cleanUrl = window.location.href.replace(/[?&]wecom_ticket=[^&]*/, '');
-    window.history.replaceState(null, '', cleanUrl);
 }
 ```
 
 说明：
+- `handleClearCache(data)` → `saveUserInfoBase({userid, token})` → 设置 `state.userId`, `state.userToken`, 写入 `localForage("userInfo")`，与账号登录/QR码登录完全一致
+- `goNext()` 处理 `from` URL 参数（登录后重定向），比 `location.href = "/"` 更完整
 - `{content: msg, language: false}` 传对象告诉 `modalConfig` 不再二次翻译（后端已用 `Doo::translate()` 翻译过）
 - `store.dispatch("call", ...)` 是 DooTask 标准 API 调用方式（非 axios 直调）
-- 写入 localStorage + Vuex store 后 `location.href = "/"` 跳转首页
 
 - [ ] **Step 2: 追加 i18n 原文到 language/original-api.txt**
 
@@ -1642,6 +1749,9 @@ cat >> language/original-api.txt << 'EOF'
 未绑定 DooTask 账号，且未开启自动注册
 注册失败
 企微用户创建失败
+企微获取 token 失败
+企微 API 请求失败
+企微 API 错误
 组织同步未开启
 同步完成
 创建用户失败
@@ -1661,11 +1771,31 @@ git commit -m "feat(wecom): add ticket exchange and wecom_error handling in logi
 
 ## 部署实施（首次部署 192.168.100.30）
 
+### 服务器架构
+
+```
+浏览器 → https://main.smee-china.com/dootask/
+         │
+         ▼
+   192.168.100.240 (宝塔 Nginx 反代)
+   location ^~ /dootask/ → proxy_pass http://192.168.100.30:2222/
+         │
+         ▼
+   192.168.100.30 (Docker, DooTask 容器)
+   port 2222 → dootask-nginx → dootask-php (Swoole :20000)
+```
+
+| 角色 | IP | 说明 |
+|------|-----|------|
+| 反代服务器 | 192.168.100.240 | 宝塔 Nginx，域名 `main.smee-china.com`，参考 `server-deployment-guide.md` §5 |
+| 发布服务器 | 192.168.100.30 | Docker 容器，SSH key `~/.ssh/bt_key`，参考 `server-deployment-guide.md` §2 |
+
 ### 服务器现状
 
 | 项 | 值 |
 |---|---|
-| 服务器 | 192.168.100.30 (Ubuntu, root, SSH key `~/.ssh/bt_key`) |
+| 发布服务器 | 192.168.100.30 (Ubuntu, root, SSH key `~/.ssh/bt_key`) |
+| 反代服务器 | 192.168.100.240 (宝塔, Nginx, 域名 `main.smee-china.com`) |
 | 磁盘 | 1TB 总量，674GB 可用 |
 | 内存 | 94GB 总量，78GB 可用 |
 | Docker | 29.1.1 + Compose v2.40.3 |
@@ -1686,9 +1816,13 @@ git commit -m "feat(wecom): add ticket exchange and wecom_error handling in logi
 
 | 方案 | URL | 说明 |
 |------|-----|------|
-| **A: 直连端口（推荐）** | `http://192.168.100.30:2222` | 最简单可靠 |
-| B: 宝塔反代（子路径） | `https://main.smee-china.com/dootask/` | 需 `./cmd https agent`，子路径支持有限 |
-| C: 子域名 | `dootask.smee-china.com` | 最干净，需 DNS 配置 |
+| **宝塔反代（已选定）** | `https://main.smee-china.com/dootask/` | 与现有服务一致，企微 OAuth 可信域名统一 |
+| 直连端口（调试用） | `http://192.168.100.30:2222` | 绕过 nginx 直连，仅内网调试 |
+
+> **选择宝塔反代的原因：**
+> 1. 企微自建应用可信域名只能配一个，`main.smee-china.com` 已配过（WeKnora OAuth 用），DooTask 复用同域名
+> 2. 与现有 `/weknora/`、`/agentstudio/` 等服务访问模式一致
+> 3. HTTPS 由宝塔统一管理
 
 ---
 
@@ -1740,24 +1874,33 @@ $SSH "curl -s -o /dev/null -w '%{http_code}' http://localhost:2222/"
 
 ---
 
-## Task 13: 初始配置 — 访问地址 + 管理员密码
+## Task 13: 初始配置 — 访问地址 + 反代模式 + 管理员密码
 
 **Files:** 无代码改动，服务器操作
 
-- [ ] **Step 1: 设置 APP_URL**
+- [ ] **Step 1: 设置 APP_URL（外部访问地址）**
 
-方案 A（直连）:
 ```bash
-$SSH "cd /opt/dootask && ./cmd env APP_URL http://192.168.100.30:2222"
+$SSH "cd /opt/dootask && ./cmd env APP_URL https://main.smee-china.com/dootask"
 ```
 
-- [ ] **Step 2: 验证 .env**
+- [ ] **Step 2: 开启反代模式**
+
+DooTask 需要知道自己在反代后面，否则生成的 URL（含 OAuth redirect_uri）会用内网地址：
+
+```bash
+$SSH "cd /opt/dootask && ./cmd https agent"
+```
+
+- [ ] **Step 3: 验证 .env**
 
 ```bash
 $SSH "grep -E '^(APP_URL|APP_PORT|APP_ID|TIMEZONE)' /opt/dootask/.env"
 ```
 
-- [ ] **Step 3: 重置管理员密码**
+预期 `APP_URL=https://main.smee-china.com/dootask`
+
+- [ ] **Step 4: 重置管理员密码**
 
 ```bash
 $SSH "cd /opt/dootask && ./cmd repassword"
@@ -1765,37 +1908,40 @@ $SSH "cd /opt/dootask && ./cmd repassword"
 
 默认管理员：`admin@admin.com`，按提示设置新密码。
 
-- [ ] **Step 4: 浏览器验证登录**
+- [ ] **Step 5: 直连验证（先不走 nginx）**
 
-打开 `http://192.168.100.30:2222`，使用 `admin@admin.com` + 新密码登录，确认进入主界面。
+```bash
+$SSH "curl -s -o /dev/null -w '%{http_code}' http://localhost:2222/"
+```
+
+预期 `200`。
 
 ---
 
-## Task 14: 宝塔 Nginx 反代（可选，方案 B）
+## Task 14: 宝塔 Nginx 反代（192.168.100.240）
 
-> 选择方案 A（直连端口）则跳过此 Task。
+> **必做**。DooTask 外部访问统一通过 `https://main.smee-china.com/dootask/`。
+> 反代服务器是 192.168.100.240（宝塔），不是发布服务器 192.168.100.30。
+> 参考 `server-deployment-guide.md` §5，现有反代映射表中已有 `/weknora/`, `/agentstudio/` 等服务。
 
-- [ ] **Step 1: DooTask 端开启反代模式**
-
-```bash
-$SSH "cd /opt/dootask && ./cmd https agent"
-```
-
-- [ ] **Step 2: 宝塔面板添加 Nginx location**
+- [ ] **Step 1: 在 192.168.100.240 宝塔面板添加 Nginx location**
 
 编辑 `main.smee-china.com` 站点配置，在 `location /` 之前添加：
 
 ```nginx
-# DooTask 任务管理
+# DooTask 任务管理（192.168.100.30:2222）
 location ^~ /dootask/ {
     proxy_pass http://192.168.100.30:2222/;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-Host $host/dootask;
-    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Real-Port $remote_port;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-Port $server_port;
+    proxy_set_header Remote-Host $remote_addr;
 
-    # WebSocket
+    # WebSocket（DooTask 群聊实时消息依赖 WS）
     proxy_http_version 1.1;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection $connection_upgrade;
@@ -1803,18 +1949,31 @@ location ^~ /dootask/ {
     proxy_send_timeout 86400s;
     proxy_connect_timeout 60s;
 
+    # 文件上传限制（DooTask 支持大文件）
     client_max_body_size 1024M;
 }
 ```
 
-- [ ] **Step 3: 重载 Nginx 并验证**
+> **header 说明**: 与 `server-deployment-guide.md` §5.2 现有 location 格式一致。
+> `$connection_upgrade` 定义在 `/www/server/panel/vhost/nginx/0.websocket.conf`（宝塔自带）。
+
+- [ ] **Step 2: 重载 Nginx 并验证**
 
 ```bash
 ssh -i ~/.ssh/bt_key root@192.168.100.240 "nginx -t && nginx -s reload"
 curl -s -o /dev/null -w '%{http_code}' https://main.smee-china.com/dootask/
 ```
 
-预期：`200`。如果静态资源 404，退回方案 A 或改用子域名方案 C。
+预期：`200`
+
+- [ ] **Step 3: 浏览器验证登录**
+
+打开 `https://main.smee-china.com/dootask/`，使用 `admin@admin.com` + 新密码登录，确认：
+  - 页面正常加载（静态资源无 404）
+  - 群聊消息实时收发（WebSocket 正常）
+
+> 如果静态资源 404（子路径兼容问题），检查 `./cmd https agent` 是否已执行。
+> DooTask 的 `./cmd https agent` 会修改容器内 nginx 配置，使其感知自己在反代后面。
 
 ---
 
@@ -1831,6 +1990,130 @@ curl -s -o /dev/null -w '%{http_code}' https://main.smee-china.com/dootask/
 - [ ] **Step 2: 验证 AI 功能**
 
 任意项目群聊中 `@AI` + 问题，确认响应。
+
+---
+
+## 3 人注册限制突破方案
+
+### 限制机制分析
+
+DooTask 社区版默认 License `people=3`，只允许 3 个活跃用户（管理员算 1 个）。
+
+```
+限制执行链路:
+  Doo::userCreate($email, $password)
+    → doo.so FFI (编译 C 库，不可修改)
+      → 内部 SQL COUNT(*) 检查用户数
+      → 超限返回 {ret:0, msg:"注册失败"}
+      → 未超限 → INSERT user + 设置 encrypt/password → 返回成功
+
+关键约束:
+  ✗ 不能绕过 doo.so 建用户 — tokenEncode 也在 doo.so 里，没有 encrypt 字段就不能生成 token
+  ✗ 不能修改 doo.so — 编译二进制，无源码
+  ✓ 可以减少用户数再调 doo.so — 删除/停用旧用户腾出 quota
+```
+
+### 前置验证：doo.so 计数是否排除 disable_at 用户
+
+PHP 端 License 展示用 `User::whereBot(0)->whereNull('disable_at')->count()`，但 `doo.so` 内部计数可能不同。**部署后第一件事就验证此行为。**
+
+```bash
+SSH="ssh -o StrictHostKeyChecking=no -i ~/.ssh/bt_key root@192.168.100.30"
+
+# 前提：系统已有 admin + 2 个普通用户 = 3 人
+
+# 实验 1: 停用一个用户后能否新建
+$SSH "cd /opt/dootask && ./cmd php artisan tinker --execute=\"
+  // 停用最后一个普通用户
+  \$u = \App\Models\User::whereBot(0)->whereNull('disable_at')->where('userid','!=',1)->latest('userid')->first();
+  echo 'Disabling: ' . \$u->email . PHP_EOL;
+  \$u->disable_at = now();
+  \$u->save();
+  echo 'Active count: ' . \App\Models\User::whereBot(0)->whereNull('disable_at')->count() . PHP_EOL;
+  // 尝试新建
+  try {
+    \$new = \App\Module\Doo::userCreate('test_limit_001@dootask.local', 'TestPass123!@#456');
+    echo 'SUCCESS: ' . \$new->email . PHP_EOL;
+  } catch (\Throwable \$e) {
+    echo 'FAILED: ' . \$e->getMessage() . PHP_EOL;
+  }
+\""
+```
+
+| 结果 | 含义 | 后续策略 |
+|------|------|----------|
+| **SUCCESS** | `doo.so` 只计非 disable 用户 | 方案 A（停用轮换）可行 |
+| **FAILED** | `doo.so` 计全量用户 | 必须硬删除用户腾 quota |
+
+```bash
+# 实验 2: 如果实验 1 FAILED，测试硬删除后能否新建
+$SSH "cd /opt/dootask && ./cmd php artisan tinker --execute=\"
+  \$u = \App\Models\User::whereBot(0)->where('userid','!=',1)->latest('userid')->first();
+  echo 'Deleting: ' . \$u->email . PHP_EOL;
+  \$u->forceDelete();
+  try {
+    \$new = \App\Module\Doo::userCreate('test_limit_002@dootask.local', 'TestPass123!@#456');
+    echo 'SUCCESS: ' . \$new->email . PHP_EOL;
+  } catch (\Throwable \$e) {
+    echo 'FAILED: ' . \$e->getMessage() . PHP_EOL;
+  }
+\""
+```
+
+```bash
+# 清理测试用户
+$SSH "cd /opt/dootask && ./cmd php artisan tinker --execute=\"
+  \App\Models\User::whereRaw(\\\"email LIKE 'test_limit_%'\\\")->each(function(\$u){ \$u->forceDelete(); });
+  // 恢复被停用的用户
+  \App\Models\User::whereNotNull('disable_at')->where('userid','!=',1)->update(['disable_at' => null]);
+  echo 'Cleaned up. Active: ' . \App\Models\User::whereBot(0)->whereNull('disable_at')->count();
+\""
+```
+
+### 方案 A: 本地测试 — 自动名额回收（已合入代码）
+
+> **代码已直接写入 Task 7 和 Task 8 的实现中，无需额外改动。**
+
+实现位置：
+- `WecomOrgSyncService::createUserWithQuotaRetry()` — 核心逻辑（静态方法）
+- `WecomOrgSyncService::recycleWecomQuota()` — 回收最不活跃的企微用户
+- `WecomController::createUserWithQuotaRetry()` — 委托给上述静态方法
+
+行为：
+- 先尝试 `Doo::userCreate()`
+- 失败 + 开发环境 + 小型 License（≤10 人）→ 自动回收最不活跃企微用户 → 重试
+- 生产环境 → 直接抛异常（购买 License 解决）
+
+安全保障：
+- `app()->environment('local', 'development', 'testing')` — 生产环境永远不触发
+- `$maxPeople <= 10` — 仅对小型 License 执行，大型 License 不会误回收
+- 只回收企微绑定用户，不碰手动创建的用户
+- 回收有 Log 记录
+
+### 方案 B: 生产环境 — 购买 Pro License
+
+DooTask 官网购买 License（`https://www.dootask.com/pricing`），输入企业人数，获取 License Key。
+
+```bash
+# 在 DooTask 管理后台 → 系统设置 → License 页面输入 License Key
+# 或通过 API:
+$SSH "cd /opt/dootask && ./cmd php artisan tinker --execute=\"
+  \App\Module\Doo::licenseSave('你的License字符串');
+  \$info = \App\Module\Doo::license();
+  echo 'people: ' . \$info['people'] . ', expired_at: ' . \$info['expired_at'];
+\""
+```
+
+### 本地开发测试步骤
+
+1. 部署 DooTask 到 192.168.100.30:2222
+2. 执行前置验证（上面的实验 1/2），确定 `doo.so` 计数逻辑
+3. 根据结果调整 `WecomOrgSyncService::recycleWecomQuota()` 中的删除方式（`forceDelete` 还是 `disable_at`）
+4. 测试企微静默登录流程：
+   - 企微用户 A 登录 → 自动注册 ✓（当前 2 人 + admin = 3）
+   - 企微用户 B 登录 → 超限 → 自动回收用户 A → 注册 B ✓
+   - 企微用户 A 再次登录 → 超限 → 自动回收用户 B → 重新注册 A ✓
+5. 验证回收后重新注册的用户数据完整性（群聊、部门、搜索索引）
 
 ---
 
@@ -1957,123 +2240,3 @@ DooTask 和 WeKnora（weknora-ui）同属一个企业微信，是两个独立的
 | **前端** | `login.vue` 新增 ticket exchange + wecom_error 展示（Task 11）|
 | **weknora-ui** | 不需要修改，通过 `wecom_userid` 天然互通 |
 | **部署** | 192.168.100.30:2222，Docker 5 容器，`./cmd install` 一键安装 |
-
-### 审查修复记录（2026-04-16）
-
-| # | 问题 | 修复 | 验证状态 |
-|---|------|------|---------|
-| 1 | `User::reg()` 密码策略/邮箱校验会阻断静默注册 | 改用 `Doo::userCreate()` 绕过 `passwordPolicy()`。`Doo::userCreate` 是 `reg()` 的底层方法（`DooSo.php:193`），C FFI 直接写 DB | ✅ 验证: `User.php:396` 调 `Doo::userCreate`，`DooSo.php:193-211` 确认 |
-| 2 | `generateToken` 返回值取法有 PHP 8 deprecation 风险 | 直接用返回值 `$token = User::generateToken($user)` | ✅ 验证: `User.php:553` return `$userinfo->token = $token` |
-| 3 | callback 错误返回 JSON（用户在 WebView 看到乱码）| 全部改为 `redirect("/#/login?wecom_error=...")` | ✅ 验证: `urlParameterAll` 解析 hash query |
-| 4 | `thirdAccessSetting` save 白名单缺企微字段（配置存不进去）| 扩展白名单加 7 个 `wecom_*` 字段 | ✅ 验证: `SystemController.php:608-616` 白名单过滤 |
-| 5 | redirect 只传 token 缺 userid（前端需要两者才生效）| ~~redirect 改为 `/#/?userid={}&token={}`~~ → **Round-2 重新修复：改用一次性 ticket，不在 URL 传 token** | ✅→🔄 Round-2 P0-1/2 |
-| 6 | 部门创建缺 `dialog_id`（没聊天群）| 改用 `saveDepartment()` 自动创建群 | ✅ 验证: `UserDepartment.php:106` `createGroup`。注意: `owner_userid=0` 时群无成员但不报错 |
-| 7 | 首次同步 leader 绑定不存在（owner 全为 0）| 加注释说明，接受首次为 0，增量同步回填 | ✅ 验证: `createGroup` 第 856 行 `if ($value > 0)` 跳过 0 |
-| 8 | 只更新已绑定用户，无法批量导入 | 新增 `syncUsers()` 按部门批量预创建用户 | ✅ 新增方法 |
-| 9 | 缺与 WeKnora 的互通说明 | 新增章节，`wecom_userid` 天然互通 | ✅ 验证: `oauth_bindings.provider_user_id` 存在 |
-
-### 多维度代码事实验证（2026-04-16 审查补充）
-
-| 维度 | 检查项 | 结果 | 源码依据 |
-|------|--------|------|---------|
-| **PHP/注册** | `Doo::userCreate` 是否可能内部校验失败 | ⚠️ C FFI 黑盒，失败抛 `ApiException($data['msg'])` | `DooSo.php:196-197` |
-| **PHP/注册** | `email_verity` 字段名（非 `verify`）| ✅ 拼写正确 | `User.php:43` `@property int\|null $email_verity` |
-| **PHP/注册** | `Base::getFirstCharter` / `cn2pinyin` 存在 | ✅ | `Base.php:2590`, `Base.php:2612` |
-| **PHP/注册** | `AbstractObserver::taskDeliver` + `ManticoreSyncTask` | ✅ `User::reg()` 第 421 行同样调用 | `User.php:421` |
-| **部门** | `saveDepartment($data, 0)` owner_userid=0 是否报错 | ✅ 不报错，但群无成员 | `createGroup` 第 856 行 `if ($value > 0)` 跳过 |
-| **部门** | `AbstractModel` 是否软删除 | ✅ 无 SoftDeletes，硬删除 | `AbstractModel.php:30` extends Model，无 use SoftDeletes |
-| **部门** | `users.department` 有 accessor 返回 int[] | ✅ 已修复比较逻辑，用数组比较替代字符串比较 | `User.php:148-154` getDepartmentAttribute |
-| **安全** | Cache driver 原子性 | ✅ Docker 用 Redis | `.env.docker:30` `CACHE_DRIVER=redis` |
-| **安全** | `isEmail("x@wecom.local")` 是否通过 | ✅ `FILTER_VALIDATE_EMAIL` 接受 `.local` | `Base.php:1035-1042` |
-| **安全** | redirect hash fragment 不泄露到 Referer | ✅ `#` 后内容不发送到服务器 | HTTP 规范 |
-| **前端** | 已有 URL token 解析 | ⚠️ **Round-2 已改为 ticket 机制，需 login.vue 前端改动** | Task 11 |
-| **前端** | 需要同时传 userid + token | 🔄 **改为 ticket exchange，不再直接传 token** | Task 11 |
-| **前端** | `$A` 全局对象存在 | ✅ | `common.js:2581` `window.$A = $` |
-| **互通** | WeKnora `oauth_bindings.provider_user_id` 存在 | ✅ | `000014_wechat_auth.up.sql:35`, `types/wechat.go:52` |
-| **Swoole** | `WecomApiClient` token 缓存用 `Cache`，非静态属性 | ✅ 符合 Swoole 规范 | 方案中 `Cache::remember` |
-| **Swoole** | 组织同步应用 Swoole Task 异步执行 | ⚠️ 首版同步，已标注后续改 Task | `CLAUDE.md: 异步任务使用 Swoole Task` |
-| **国际化** | 新增中文文本需加入翻译文件 | ⚠️ 需实施时补充 | 见下方国际化清单 |
-
-### CLAUDE.md 合规性检查（2026-04-16）
-
-| 规范 | 方案合规性 | 说明 |
-|------|-----------|------|
-| LaravelS/Swoole: 不存请求级状态到静态属性 | ✅ | `WecomApiClient` 每次 new，token 存 `Cache` 非静态属性 |
-| 路由: `Route::any('{resource}/{method}')` 模式 | ✅ | `wecom/{method}` + `wecom/{method}/{action}` 完全遵循 |
-| 响应: `Base::retSuccess` / `Base::retError` | ✅ | API 接口全部使用 |
-| 异常: `ApiException` | ✅ | 业务异常全部用 `ApiException` |
-| 模型: `createInstance` 创建 | ✅ | 绑定/映射/部门全部用 `createInstance` |
-| 认证: `Doo::userId()` / `User::auth()` | ✅ | entry 用 `Doo::userId()`，admin 接口用 `User::auth('admin')` |
-| 异步: Swoole Task 而非 Laravel Queue | ⚠️ 首版同步 | 已标注后续版本改为 `WecomOrgSyncTask` |
-| 国际化: 中文原文加入翻译文件 | ✅ Round-2 已修复 | Task 11 Step 2 追加到 `original-api.txt` + 代码用 `Doo::translate()` 包装 |
-| 表结构: 必须通过 migration | ✅ | 2 个 migration 文件 |
-
-### 国际化：需追加到 `language/original-api.txt` 的文本
-
-实施时将以下中文原文追加到 `language/original-api.txt`（去重）：
-
-```
-企业微信登录未开启
-授权失败：未获取到 code
-授权失败：state 验证失败
-授权失败
-非企业成员，无法登录
-账号已停用或不存在
-未绑定 DooTask 账号，且未开启自动注册
-注册失败
-企微用户创建失败
-组织同步未开启
-同步完成
-创建用户失败
-ticket 不能为空
-ticket 无效或已过期
-```
-
-### Round-2 多专家审查修复记录（2026-04-16）
-
-> 5 专家并行审查（认证/路由/部门/前端/安全），50 项源码事实逐一核验，39 ✅ / 8 ⚠️ / 3 ❌。
-
-| # | 级别 | 问题 | 修复 | 状态 |
-|---|------|------|------|------|
-| R2-1 | **P0** | Token 30 天有效，通过 URL `/#/?userid=X&token=Y` 明文暴露在浏览器历史/地址栏/截屏 | 改用一次性 ticket：`Cache::put` 60秒 → redirect 仅带 ticket → 前端 POST `/api/wecom/exchange` 换 token | ✅ 已修复 Task 7+11 |
-| R2-2 | **P0** | `common.js:664 removeURLParameter` 用 `URL.searchParams.delete()`，不操作 hash query → 生产环境 URL 清理失效 | 与 R2-1 一起修复：不再通过 URL 传 token | ✅ 已修复（ticket 无需清理，60秒自毁） |
-| R2-3 | **P0** | `login.vue` 无 `wecom_error` 处理逻辑（`Grep wecom_error` 前端零结果），用户看到空白登录页 | 新增 Task 11：`login.vue mounted()` 读取 `wecom_error` + `$A.modalError()` 展示 | ✅ 已修复 Task 11 |
-| R2-4 | **P0** | `syncDepartments` catch 后 `->save()` 写入 `dialog_id=0` 的僵尸部门，违反部门必有群的隐式契约 | catch 后改为 `$stats['errors']++; continue;` 跳过此部门，下次同步重试 | ✅ 已修复 Task 8 |
-| R2-5 | P1 | 错误消息中文硬编码，未走 `Doo::translate()`，多语言用户看到中文 | 所有 redirect 中 urlencode 的字符串用 `Doo::translate()` 包装 | ✅ 已修复 Task 7 |
-| R2-6 | P1 | `entry()` 缺 try/catch，`getWecomSetting()` 未配置时抛 ApiException → 用户看到 JSON | 加 try/catch，redirect 到 `/#/login?wecom_error=...` | ✅ 已修复 Task 7 |
-| R2-7 | P1 | `wecom_contact_secret` 明文存 `settings` 表（LDAP 密码也是明文，但企微 secret 风险更大） | **待修复**：建议在 `setting__thirdaccess` save 时用 `Crypt::encryptString()` 加密 `wecom_secret`/`wecom_contact_secret`，读取时 `Crypt::decryptString()` | ⏳ 建议实施时处理 |
-| R2-8 | P1 | 组织同步同步执行违反 `CLAUDE.md` "异步任务必须用 Swoole Task" 规范，>100 部门会超时 | **待修复**：创建 `app/Tasks/WecomOrgSyncTask.php` 继承 `AbstractTask`，HTTP 接口返回 task_id，前端轮询进度 | ⏳ 建议实施时处理 |
-| R2-9 | P1 | `Http::get/post`（Laravel HTTP facade）在 DooTask 全项目首次引入，与现有 `Module/Ihttp.php` cURL 风格不一致 | `WecomApiClient` 改用 `Ihttp::ihttp_get/ihttp_request`，移除 `Http` facade import | ✅ 已修复 Task 4 |
-| R2-10 | P1 | `doo.so` FFI 黑盒 — `.local` 邮箱和密码是否被接受无法静态验证 | **待验证**：staging 先跑 `Doo::userCreate('test_wecom@dootask.local', 'Test123!@#')` 验证通过再实施 | ⏳ 部署前验证 |
-| R2-11 | P2 | `owner_userid=0` 时 `createGroup` 创建无成员空群，部门页 UX 异常 | 建议：延迟创建群或用 system bot 占位。当前"接受首次为 0"的注释仍有效 | 📝 可接受 |
-| R2-12 | P2 | `user_departments.name` varchar(100)，超长企微部门名被截断 | 已加 `mb_substr($deptName, 0, 100)` | ✅ 已修复 Task 8 |
-| R2-13 | P2 | `saveDepartment` 内嵌 `createGroup` 形成嵌套事务，MySQL savepoint 回滚语义未验证 | 已通过去掉降级 save() 缓解：失败整体跳过，不写半成品 | ✅ 间接修复 |
-
-### Round-3 反问反证审查修复记录（2026-04-16）
-
-> 3 专家魔鬼辩护：silentRegister 副作用完整性、Ihttp 替换正确性、ticket 安全性。
-
-| # | 级别 | 问题 | 修复 | 状态 |
-|---|------|------|------|------|
-| R3-1 | **P0** | `WecomApiClient` 中 `Ihttp` 返回值用 `['content']`，实际应为 `['data']`（参照 `AI.php:115`）。所有 API 调用 100% 失败 | 三个方法全部改为 `$result['data']` | ✅ 已修复 |
-| R3-2 | **P0** | 缺少 `Base::isError($result)` 前置检查，网络失败时 `json_decode([], true)` 产生 PHP Warning + 误导性错误信息 | 三个方法全部加 `Base::isError()` 检查，失败时抛含真实 cURL 错误的 ApiException | ✅ 已修复 |
-| R3-3 | **P1** | `syncUsers()` → `createUserFromWecom()` 缺少三个关键副作用：全员群加入、ManticoreSyncTask、user_onboard hook。批量同步的用户搜索不到、不在全员群、appstore 不知道 | 在 `createUserFromWecom()` 的 `$user->save()` 后补全三个副作用 | ✅ 已修复 |
-| R3-4 | **P1** | `silentRegister` 和 `createUserFromWecom` 均未执行 `reg_identity='temp'` 策略。当系统配置新用户为临时身份时，企微用户绕过限制直接获得正式权限 | 两条路径均补上 `reg_identity` 检查，与 `User::reg()` 保持一致 | ✅ 已修复 |
-| R3-5 | 🛡️ | ticket 机制安全性确认：381 bits 熵不可暴力破解，同源策略阻止跨域读取，60秒+一次性消费有效 | — | ✅ 安全 |
-| R3-6 | ⚠️ | `Cache::pull` 非原子（GET+DEL 非 Lua 脚本），理论 double-spend | 风险极低（需同一 ticket 毫秒级并发），可接受 | 📝 已知风险 |
-| R3-7 | ⚠️ | `Ihttp` 全局禁用 SSL 验证（`CURLOPT_SSL_VERIFYPEER=false`），比 `Http` facade 安全性低 | DooTask 全局既有行为，非本次引入。与项目风格一致的代价 | 📝 已知风险 |
-| R3-8 | ⚠️ | exchange 端点无 rate limit（DoS 向量） | 建议给 wecom 路由加 `throttle` middleware，但 ticket 381 bits 熵使暴力枚举不可能 | 📝 建议实施时处理 |
-
-### Round-4 严格指标审查修复记录（2026-04-16）
-
-> 3 专家量化审查：边界条件 18 项、一致性 17 项、完整性 29 项，共 64 项。Pass 率 85.9%。
-
-| # | 级别 | 问题 | 修复 | 状态 |
-|---|------|------|------|------|
-| R4-1 | **P0** | `$A.modalError(msg, {language: false})` 签名错误：第二参数是 millisecond，`language` 必须在 config 对象内 | 改为 `$A.modalError({content: msg, language: false})`（两处）| ✅ 已修复 Task 11 |
-| R4-2 | **P1** | `silentRegister` 并发注册竞态：`findByWecom` 和 `Doo::userCreate` 之间无锁，两个请求可能为同一 wecom_userid 创建两个用户 | 加 `Cache::lock` + double-check，拆分为 `silentRegister`（锁）+ `doSilentRegister`（逻辑）| ✅ 已修复 Task 7 |
-| R4-3 | **P1** | 部门拓扑排序 `usort` 按 parentid 升序无法处理循环引用和深层嵌套 | 改为 BFS 层序遍历，从根节点 id=1 开始，保证父部门先于子部门 | ✅ 已修复 Task 8 |
-| R4-4 | P2 | `Log::warning` 在 DooTask 项目中无使用先例 | 全部改为 `Log::info`（非致命错误场景）| ✅ 已修复 |
-| R4-5 | P2 | `Base::retSuccess(Doo::translate('同步完成'))` 不符合惯例 | 检查发现已是 `Base::retSuccess('同步完成', ...)`，无需修复 | ✅ 无问题 |
-| R4-6 | P3 | 删除部门无处理逻辑（企微删除部门后 DooTask 侧残留）| 首版可接受，增量同步时处理 | 📝 后续版本 |
-| R4-7 | P3 | 模型缺 `@method static` PHPDoc | IDE 辅助，不影响运行 | 📝 建议实施时补充 |

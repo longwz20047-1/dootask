@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 将 DooTask 改造为企业微信自建应用，实现静默登录、静默注册、组织架构同步，并完成首次部署到 192.168.100.30:2222。
+**Goal:** 将 DooTask 改造为企业微信自建应用，实现静默登录、静默注册、组织架构同步，并完成首次部署到 192.168.100.30:2222，通过 192.168.100.240 宝塔 Nginx 反代对外暴露为 `https://main.smee-china.com/dootask/`。
 
 **Architecture:** 在 DooTask 现有认证体系旁新增企微 OAuth 通道（参照 LDAP 集成模式），通过一次性 ticket 机制安全传递 token。组织同步通过管理员手动触发拉取企微通讯录 API 实现。7 个新增文件 + 3 个修改文件，零新依赖。
 
@@ -75,17 +75,18 @@
 
 - [ ] 在 `setting__thirdaccess()` 方法的白名单数组中追加 7 个 `wecom_*` 字段
 - [ ] 在默认值数组中追加对应默认值
-- [ ] **验证：** 修改行数 ≤ 15 行，不改动任何现有逻辑
+- [ ] **验证：** 修改行数约 17 行（7 白名单 + 7 默认值 + 3 注释），不改动任何现有逻辑
 - [ ] `git commit -m "feat(wecom): extend thirdAccessSetting whitelist for wecom config"`
 
 ### Task 6: 路由注册
 
 **Files:** Modify `routes/web.php`
 
-- [ ] 在路由组内追加 2 行：
+- [ ] 在路由组内追加 2 行（与 web.php 现有路由格式一致，使用 class 直接引用）：
   ```php
-  Route::any('wecom/{method}', [WecomController::class, '__invoke']);
-  Route::any('wecom/{method}/{action}', [WecomController::class, '__invoke']);
+  // 企业微信
+  Route::any('wecom/{method}',                    \App\Http\Controllers\Api\WecomController::class);
+  Route::any('wecom/{method}/{action}',           \App\Http\Controllers\Api\WecomController::class);
   ```
 - [ ] `git commit -m "feat(wecom): add wecom routes"`
 
@@ -98,14 +99,14 @@
 **Files:** Create `app/Http/Controllers/Api/WecomController.php`
 
 - [ ] 从设计方案 Task 7 复制完整控制器代码
-- [ ] **关键检查点（4 轮审查修复）：**
+- [ ] **关键检查点（5 轮审查修复）：**
   - `entry()` 有 try/catch 包裹 `getWecomSetting()`（Round-2 P1-9）
   - `callback()` 用 ticket 机制，不在 URL 传 token（Round-2 P0-1/2）
   - `exchange()` 方法存在，用 `Cache::pull` 一次性消费 ticket
-  - `silentRegister()` 有 `Cache::lock` 防并发（Round-4 R4-2）
-  - `silentRegister()` 拆分为锁层 + `doSilentRegister()` 逻辑层
+  - `silentRegister()` 用 try/catch `QueryException` 防并发（Round-5 修复，替代 Cache::lock）
+  - `doSilentRegister()` 中命名空间正确：`\App\Observers\AbstractObserver`，`\App\Module\Apps`（Round-5 修复）
   - 所有错误消息用 `Doo::translate()` 包装（Round-2 P1-5）
-  - `reg_identity='temp'` 策略已处理（Round-3 R3-4）
+  - `reg_identity='temp'` 用 `Base::arrayImplode()`（Round-5 修复，与 User::reg() 一致）
   - 全员群加入 + ManticoreSyncTask + user_onboard hook 三个副作用完整
 - [ ] `git commit -m "feat(wecom): add WecomController with OAuth, ticket exchange, silent registration"`
 
@@ -134,8 +135,10 @@
 ### Task 10: 企微管理后台配置
 
 - [ ] 按设计方案 Task 10 在企微管理后台创建自建应用
+- [ ] 应用主页填 `https://main.smee-china.com/dootask/api/wecom/entry`
+- [ ] 可信域名填 `main.smee-china.com`（与 WeKnora OAuth 共用）
 - [ ] 记录 CorpID / AgentId / Secret / 通讯录同步 Secret
-- [ ] 在 DooTask 管理后台 → 系统设置 → 第三方帐号 填入配置
+- [ ] 在 DooTask 管理后台（`https://main.smee-china.com/dootask/`）→ 系统设置 → 第三方帐号 填入配置
 
 ### Task 11: 前端 login.vue — ticket exchange + wecom_error
 
@@ -144,12 +147,14 @@
 - Modify `language/original-api.txt`
 
 - [ ] 在 `login.vue` 的 `mounted()` 中添加企微回调处理代码
-- [ ] **关键检查点（Round-4 修复）：**
+- [ ] **关键检查点（Round-5 修复）：**
   - `$A.modalError({content: msg, language: false})`（对象形式，不是两参数）
   - `store.dispatch("call", {url: "wecom/exchange", data: {ticket}})` 标准调用
-  - 成功后写 localStorage + Vuex store + `location.href = "/"`
+  - 成功后用 `handleClearCache(data).then(this.goNext)`（与 QR 码/账号登录一致）
+  - ❌ 不要用 `commit("setUserInfo")` — mutations.js 中不存在
+  - ❌ 不要手动 `localStorage.setItem` — `handleClearCache` 内部统一处理
   - URL 清理用 `window.history.replaceState`
-- [ ] 追加 14 条中文原文到 `language/original-api.txt`
+- [ ] 追加 17 条中文原文到 `language/original-api.txt`（Round-5 新增 3 条 API 错误消息）
 - [ ] `git commit -m "feat(wecom): add ticket exchange and wecom_error handling in login page"`
 
 ---
@@ -176,16 +181,22 @@ SSH="ssh -o StrictHostKeyChecking=no -i ~/.ssh/bt_key root@192.168.100.30"
   ```
   如果 FFI 拒绝 `.local` 邮箱，需改用 `wecom_{userid}@wecom.dootask.com` 格式，并同步修改设计方案中的邮箱生成逻辑。
 
-### Task 13: 初始配置
+### Task 13: 初始配置 + 反代模式
 
-- [ ] `$SSH "cd /opt/dootask && ./cmd env APP_URL http://192.168.100.30:2222"`
+- [ ] `$SSH "cd /opt/dootask && ./cmd env APP_URL https://main.smee-china.com/dootask"`
+- [ ] `$SSH "cd /opt/dootask && ./cmd https agent"` 开启反代模式
 - [ ] `$SSH "cd /opt/dootask && ./cmd repassword"` 重置管理员密码
-- [ ] 浏览器访问 `http://192.168.100.30:2222`，登录验证
+- [ ] 直连验证: `$SSH "curl -s -o /dev/null -w '%{http_code}' http://localhost:2222/"` → `200`
 
-### Task 14: 宝塔 Nginx 反代（可选）
+### Task 14: 宝塔 Nginx 反代（192.168.100.240，必做）
 
-- [ ] 如选方案 A（直连端口），跳过此 Task
-- [ ] 如选方案 B，按设计方案 Task 14 配置 Nginx location
+> 反代服务器是 192.168.100.240（宝塔 Nginx），不是发布服务器 192.168.100.30。
+> 参考 `server-deployment-guide.md` §5，在 `main.smee-china.com` 站点配置中添加 `/dootask/` location。
+
+- [ ] 在 192.168.100.240 宝塔面板 `main.smee-china.com` 站点配置中添加 `/dootask/` location（见设计方案 Task 14）
+- [ ] `ssh -i ~/.ssh/bt_key root@192.168.100.240 "nginx -t && nginx -s reload"`
+- [ ] `curl -s -o /dev/null -w '%{http_code}' https://main.smee-china.com/dootask/` → `200`
+- [ ] 浏览器访问 `https://main.smee-china.com/dootask/`，登录验证 + WebSocket 消息验证
 
 ### Task 15: AI 助手配置（可选）
 
@@ -199,7 +210,7 @@ SSH="ssh -o StrictHostKeyChecking=no -i ~/.ssh/bt_key root@192.168.100.30"
 
 ### 验证清单
 
-- [ ] **部署验证：** 浏览器访问 `http://192.168.100.30:2222`，登录成功
+- [ ] **部署验证：** 浏览器访问 `https://main.smee-china.com/dootask/`，登录成功
 - [ ] **静默登录：** 企微工作台点击应用 → 自动跳转 DooTask 首页（已登录）
 - [ ] **静默注册：** 新企微用户首次点击 → 自动创建 DooTask 账号 + 登录
 - [ ] **ticket 安全：** 浏览器地址栏不出现 token，仅短暂出现 ticket
@@ -223,6 +234,22 @@ $SSH "cd /opt/dootask && ./cmd php artisan tinker --execute=\"
 
 - 如果返回 User 对象 → ✅ 继续实施
 - 如果抛异常 → 需要改用真实域名邮箱格式（如 `wecom_xxx@{corpid}.wecom.work`）
+
+---
+
+## 3 人注册限制验证（FFI 验证之后执行）
+
+验证 `doo.so` 对 `disable_at` 用户的计数行为，决定回收策略。详见设计方案"3 人注册限制突破方案"章节。
+
+- [ ] 确保系统有 admin + 2 个普通用户 = 3 人（满额状态）
+- [ ] 实验 1: 停用一个用户 (`disable_at = now()`) 后调 `Doo::userCreate()`
+  - SUCCESS → `doo.so` 排除 disable 用户 → 回收策略用 soft-disable
+  - FAILED → 进入实验 2
+- [ ] 实验 2: 硬删除一个用户 (`forceDelete()`) 后调 `Doo::userCreate()`
+  - SUCCESS → 回收策略用 `forceDelete`
+  - FAILED → `doo.so` 有其他计数机制，需要排查或购买 License
+- [ ] 清理测试数据，恢复被停用的用户
+- [ ] 根据实验结果，在设计方案的 `recycleQuota()` 中选择对应的删除方式
 
 ---
 
