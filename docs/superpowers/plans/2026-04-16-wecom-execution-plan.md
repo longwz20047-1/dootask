@@ -17,8 +17,10 @@
 ## 前置条件
 
 - [ ] Docker Desktop 已启动
-- [ ] DooTask 已通过 `./cmd install --port 2222` 安装（见 Phase 3）
-- [ ] 企微管理后台已创建自建应用（见 Phase 4 Task 10）
+- [ ] PHP 8.0+（Docker 容器内自带，本地开发需确认）
+- [ ] Node.js 20+（前端编译需要）
+- [ ] DooTask 已通过 `./cmd install --port 2222` 安装（见 Phase 4 Task 12）
+- [ ] 企微管理后台已创建自建应用（见 Phase 3 Task 10）
 
 ---
 
@@ -123,9 +125,11 @@
 
 ### Task 9: WecomController — 组织同步管理接口
 
-- [ ] 确认 Task 7 中已包含 `org__sync()`, `org__status()` 等管理接口
-- [ ] 这些方法都有 `User::auth('admin')` 权限检查
-- [ ] 无需额外文件，已在 Task 7 的 WecomController 中
+**Files:** Modify `app/Http/Controllers/Api/WecomController.php`
+
+- [ ] 从设计方案 Task 9 复制 `org__sync()` 和 `org__status()` 方法，追加到 WecomController 类末尾
+- [ ] 确认两个方法都有 `User::auth('admin')` 权限检查
+- [ ] `git commit -m "feat(wecom): add org sync admin endpoints"`
 
 ### Task 10: 企微管理后台配置
 
@@ -162,6 +166,15 @@ SSH="ssh -o StrictHostKeyChecking=no -i ~/.ssh/bt_key root@192.168.100.30"
 - [ ] `$SSH "cd /opt/dootask && chmod +x cmd && ./cmd install --port 2222"`
 - [ ] 验证 5 个容器全部 `Up (healthy)`
 - [ ] `curl -s -o /dev/null -w '%{http_code}' http://192.168.100.30:2222/` → 预期 `200`
+- [ ] **FFI 黑盒验证（Round-2 R2-10）：** 企微虚拟邮箱能否通过 `doo.so` 校验
+  ```bash
+  $SSH "cd /opt/dootask && ./cmd php artisan tinker --execute=\"var_dump(\App\Module\Doo::userCreate('test_wecom_001@dootask.local', 'TestPass123!@#456'));\""
+  ```
+  预期：返回 User 对象（非 null/异常）。验证后删除测试用户：
+  ```bash
+  $SSH "cd /opt/dootask && ./cmd php artisan tinker --execute=\"\App\Models\User::whereEmail('test_wecom_001@dootask.local')->first()?->delete();\""
+  ```
+  如果 FFI 拒绝 `.local` 邮箱，需改用 `wecom_{userid}@wecom.dootask.com` 格式，并同步修改设计方案中的邮箱生成逻辑。
 
 ### Task 13: 初始配置
 
@@ -221,3 +234,37 @@ $SSH "cd /opt/dootask && ./cmd php artisan tinker --execute=\"
 | 2 | 组织同步改 Swoole Task 异步执行 | Round-2 R2-8 |
 | 3 | 删除部门处理逻辑（增量同步清理僵尸映射）| Round-4 R4-6 |
 | 4 | exchange 端点加 `throttle` middleware | Round-3 R3-8 |
+
+---
+
+## 回滚方案
+
+### 代码回滚（企微集成代码有问题）
+
+```bash
+cd D:/workspace/agent-weknora/dootask
+git log --oneline -10                    # 找到企微集成前的 commit
+git revert <commit>..HEAD               # 逐个 revert，保留历史
+# 或者硬回退（慎用）
+git reset --hard <commit-before-wecom>
+```
+
+数据库回滚：
+```bash
+$SSH "cd /opt/dootask && ./cmd artisan migrate:rollback --step=2"
+# 回滚最近 2 个迁移（user_wecom_bindings + wecom_department_mappings）
+```
+
+### 部署回滚（DooTask 整体有问题）
+
+```bash
+SSH="ssh -o StrictHostKeyChecking=no -i ~/.ssh/bt_key root@192.168.100.30"
+
+# 备份后完全卸载
+$SSH "cd /opt/dootask && ./cmd mysql backup"
+$SSH "cd /opt/dootask && ./cmd uninstall"
+$SSH "rm -rf /opt/dootask"
+
+# 仅停止（不删数据，不占 CPU/内存）
+$SSH "cd /opt/dootask && ./cmd down"
+```
