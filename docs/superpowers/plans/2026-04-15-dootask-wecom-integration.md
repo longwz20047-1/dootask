@@ -822,6 +822,35 @@ class WecomController extends AbstractController
      */
     private function silentRegister(array $setting, string $corpId, string $wecomUserId): User
     {
+        // [Round-4 R4-2 修复] Redis 锁防并发注册竞态
+        // findByWecom 和 Doo::userCreate 之间无事务保护，两个请求可能同时为同一 wecom_userid 创建用户
+        $lockKey = "wecom_register:{$corpId}:{$wecomUserId}";
+        $lock = Cache::lock($lockKey, 10);
+        if (!$lock->get()) {
+            throw new ApiException(Doo::translate('注册处理中，请稍后'));
+        }
+
+        try {
+            // 拿到锁后再次检查绑定（double-check）
+            $existingBinding = UserWecomBinding::findByWecom($corpId, $wecomUserId);
+            if ($existingBinding) {
+                $user = User::whereUserid($existingBinding->userid)->first();
+                if ($user) {
+                    return $user;
+                }
+            }
+
+            return $this->doSilentRegister($setting, $corpId, $wecomUserId);
+        } finally {
+            $lock->release();
+        }
+    }
+
+    /**
+     * 实际注册逻辑（在锁内执行）
+     */
+    private function doSilentRegister(array $setting, string $corpId, string $wecomUserId): User
+    {
         // 从企微获取成员信息（使用通讯录同步 secret 获取完整信息）
         $contactClient = $this->makeContactClient($setting);
         try {
@@ -1050,13 +1079,22 @@ class WecomOrgSyncService
             return $stats;
         }
 
-        // 2. 按 parentid 排序，确保父部门先处理
-        usort($wecomDepts, function ($a, $b) {
-            // 根部门(id=1)最先，然后按 parentid 升序
-            if ($a['id'] === 1) return -1;
-            if ($b['id'] === 1) return 1;
-            return ($a['parentid'] ?? 0) - ($b['parentid'] ?? 0);
-        });
+        // 2. [Round-4 R4-3 修复] BFS 层序遍历替代 usort，保证父部门先于子部门
+        // usort 按 parentid 升序无法处理循环引用和深层嵌套，BFS 从根节点开始安全可靠
+        $byParent = [];
+        foreach ($wecomDepts as $dept) {
+            $byParent[$dept['parentid'] ?? 0][] = $dept;
+        }
+        $sorted = [];
+        $queue = [1]; // 企微根部门 id=1
+        while ($queue) {
+            $id = array_shift($queue);
+            foreach ($byParent[$id] ?? [] as $dept) {
+                $sorted[] = $dept;
+                $queue[] = $dept['id'];
+            }
+        }
+        $wecomDepts = $sorted;
 
         // 记录本次同步中企微存在的部门ID，用于后续清理僵尸映射
         $activeWecomDeptIds = [];
@@ -1142,7 +1180,7 @@ class WecomOrgSyncService
                         'owner_userid' => $ownerUserid ?: 0,
                     ], 0);
                 } catch (\Throwable $e) {
-                    Log::warning("[WecomOrgSync] 部门创建失败，跳过: {$deptName}", ['error' => $e->getMessage()]);
+                    Log::info("[WecomOrgSync] 部门创建失败，跳过: {$deptName}", ['error' => $e->getMessage()]);
                     $stats['errors'] = ($stats['errors'] ?? 0) + 1;
                     continue;
                 }
@@ -1190,7 +1228,7 @@ class WecomOrgSyncService
             try {
                 $wecomUser = $this->client->getUser($binding->wecom_userid);
             } catch (\Throwable $e) {
-                Log::warning("[WecomOrgSync] 获取成员失败: {$binding->wecom_userid}", ['error' => $e->getMessage()]);
+                Log::info("[WecomOrgSync] 获取成员失败: {$binding->wecom_userid}", ['error' => $e->getMessage()]);
                 $stats['errors']++;
                 continue;
             }
@@ -1266,7 +1304,7 @@ class WecomOrgSyncService
             try {
                 $members = $this->client->getDepartmentUsersDetail($mapping->wecom_dept_id);
             } catch (\Throwable $e) {
-                Log::warning("[WecomOrgSync] 获取部门成员失败: dept={$mapping->wecom_dept_id}", ['error' => $e->getMessage()]);
+                Log::info("[WecomOrgSync] 获取部门成员失败: dept={$mapping->wecom_dept_id}", ['error' => $e->getMessage()]);
                 $stats['errors']++;
                 continue;
             }
@@ -1286,7 +1324,7 @@ class WecomOrgSyncService
                     $this->createUserFromWecom($member);
                     $stats['created']++;
                 } catch (\Throwable $e) {
-                    Log::warning("[WecomOrgSync] 创建用户失败: {$wecomUserId}", ['error' => $e->getMessage()]);
+                    Log::info("[WecomOrgSync] 创建用户失败: {$wecomUserId}", ['error' => $e->getMessage()]);
                     $stats['errors']++;
                 }
             }
@@ -1556,7 +1594,9 @@ const urlParams = $A.urlParameterAll();
 
 // 企微错误展示
 if (urlParams.wecom_error) {
-    $A.modalError(decodeURIComponent(urlParams.wecom_error), {language: false});
+    // [Round-4 R4-1 修复] $A.modalError 第一参数必须是 config 对象才能传 language
+    // modalConfig() 对 string 参数会转为 {content: str}，language 属性丢失
+    $A.modalError({content: decodeURIComponent(urlParams.wecom_error), language: false});
     // 清理 URL 中的错误参数
     const cleanUrl = window.location.href.replace(/[?&]wecom_error=[^&]*/, '');
     window.history.replaceState(null, '', cleanUrl);
@@ -1576,7 +1616,7 @@ if (urlParams.wecom_ticket) {
             window.location.href = "/";
         }
     }).catch(({msg}) => {
-        $A.modalError(msg || "企微登录失败", {language: false});
+        $A.modalError({content: msg || "企微登录失败", language: false});
     });
     // 清理 URL 中的 ticket
     const cleanUrl = window.location.href.replace(/[?&]wecom_ticket=[^&]*/, '');
@@ -1585,7 +1625,7 @@ if (urlParams.wecom_ticket) {
 ```
 
 说明：
-- `{language: false}` 告诉 `$A.modalError` 不再二次翻译（后端已用 `Doo::translate()` 翻译过）
+- `{content: msg, language: false}` 传对象告诉 `modalConfig` 不再二次翻译（后端已用 `Doo::translate()` 翻译过）
 - `store.dispatch("call", ...)` 是 DooTask 标准 API 调用方式（非 axios 直调）
 - 写入 localStorage + Vuex store 后 `location.href = "/"` 跳转首页
 
@@ -2023,3 +2063,17 @@ ticket 无效或已过期
 | R3-6 | ⚠️ | `Cache::pull` 非原子（GET+DEL 非 Lua 脚本），理论 double-spend | 风险极低（需同一 ticket 毫秒级并发），可接受 | 📝 已知风险 |
 | R3-7 | ⚠️ | `Ihttp` 全局禁用 SSL 验证（`CURLOPT_SSL_VERIFYPEER=false`），比 `Http` facade 安全性低 | DooTask 全局既有行为，非本次引入。与项目风格一致的代价 | 📝 已知风险 |
 | R3-8 | ⚠️ | exchange 端点无 rate limit（DoS 向量） | 建议给 wecom 路由加 `throttle` middleware，但 ticket 381 bits 熵使暴力枚举不可能 | 📝 建议实施时处理 |
+
+### Round-4 严格指标审查修复记录（2026-04-16）
+
+> 3 专家量化审查：边界条件 18 项、一致性 17 项、完整性 29 项，共 64 项。Pass 率 85.9%。
+
+| # | 级别 | 问题 | 修复 | 状态 |
+|---|------|------|------|------|
+| R4-1 | **P0** | `$A.modalError(msg, {language: false})` 签名错误：第二参数是 millisecond，`language` 必须在 config 对象内 | 改为 `$A.modalError({content: msg, language: false})`（两处）| ✅ 已修复 Task 11 |
+| R4-2 | **P1** | `silentRegister` 并发注册竞态：`findByWecom` 和 `Doo::userCreate` 之间无锁，两个请求可能为同一 wecom_userid 创建两个用户 | 加 `Cache::lock` + double-check，拆分为 `silentRegister`（锁）+ `doSilentRegister`（逻辑）| ✅ 已修复 Task 7 |
+| R4-3 | **P1** | 部门拓扑排序 `usort` 按 parentid 升序无法处理循环引用和深层嵌套 | 改为 BFS 层序遍历，从根节点 id=1 开始，保证父部门先于子部门 | ✅ 已修复 Task 8 |
+| R4-4 | P2 | `Log::warning` 在 DooTask 项目中无使用先例 | 全部改为 `Log::info`（非致命错误场景）| ✅ 已修复 |
+| R4-5 | P2 | `Base::retSuccess(Doo::translate('同步完成'))` 不符合惯例 | 检查发现已是 `Base::retSuccess('同步完成', ...)`，无需修复 | ✅ 无问题 |
+| R4-6 | P3 | 删除部门无处理逻辑（企微删除部门后 DooTask 侧残留）| 首版可接受，增量同步时处理 | 📝 后续版本 |
+| R4-7 | P3 | 模型缺 `@method static` PHPDoc | IDE 辅助，不影响运行 | 📝 建议实施时补充 |
