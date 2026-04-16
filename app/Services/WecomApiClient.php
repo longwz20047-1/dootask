@@ -47,36 +47,55 @@ class WecomApiClient
     }
 
     /**
-     * GET 请求
+     * token 过期 errcode（42001=expired, 40014=invalid）
+     */
+    private const TOKEN_EXPIRED_CODES = [42001, 40014];
+
+    /**
+     * GET 请求（token 过期自动重试一次）
      */
     public function get(string $path, array $params = []): array
     {
-        $params['access_token'] = $this->getAccessToken();
-        $url = self::BASE_URL . $path . '?' . http_build_query($params);
-        $result = Ihttp::ihttp_get($url);
-        if (Base::isError($result)) {
-            throw new ApiException(Doo::translate('企微 API 请求失败') . " [{$path}]: " . ($result['msg'] ?? 'network error'));
-        }
-        $resp = json_decode($result['data'], true);
-        if (($resp['errcode'] ?? -1) !== 0) {
-            throw new ApiException(Doo::translate('企微 API 错误') . " [{$path}]: {$resp['errcode']} {$resp['errmsg']}");
-        }
-        return $resp;
+        return $this->requestWithRetry(function () use ($path, $params) {
+            $params['access_token'] = $this->getAccessToken();
+            $url = self::BASE_URL . $path . '?' . http_build_query($params);
+            $result = Ihttp::ihttp_get($url);
+            if (Base::isError($result)) {
+                throw new ApiException(Doo::translate('企微 API 请求失败') . " [{$path}]: " . ($result['msg'] ?? 'network error'));
+            }
+            return json_decode($result['data'], true);
+        }, $path);
     }
 
     /**
-     * POST 请求
+     * POST 请求（token 过期自动重试一次）
      */
     public function post(string $path, array $data = []): array
     {
-        $token = $this->getAccessToken();
-        $url = self::BASE_URL . $path . '?access_token=' . $token;
-        $headers = ['Content-Type' => 'application/json'];
-        $result = Ihttp::ihttp_request($url, json_encode($data), $headers);
-        if (Base::isError($result)) {
-            throw new ApiException(Doo::translate('企微 API 请求失败') . " [{$path}]: " . ($result['msg'] ?? 'network error'));
+        return $this->requestWithRetry(function () use ($path, $data) {
+            $token = $this->getAccessToken();
+            $url = self::BASE_URL . $path . '?access_token=' . $token;
+            $headers = ['Content-Type' => 'application/json'];
+            $result = Ihttp::ihttp_request($url, json_encode($data), $headers);
+            if (Base::isError($result)) {
+                throw new ApiException(Doo::translate('企微 API 请求失败') . " [{$path}]: " . ($result['msg'] ?? 'network error'));
+            }
+            return json_decode($result['data'], true);
+        }, $path);
+    }
+
+    /**
+     * 执行请求，token 过期时清缓存重试一次
+     */
+    private function requestWithRetry(callable $request, string $path): array
+    {
+        $resp = $request();
+        $errcode = $resp['errcode'] ?? -1;
+        if (in_array($errcode, self::TOKEN_EXPIRED_CODES, true)) {
+            $cacheKey = "{$this->cachePrefix}_token_{$this->corpId}_" . md5($this->secret);
+            Cache::forget($cacheKey);
+            $resp = $request();
         }
-        $resp = json_decode($result['data'], true);
         if (($resp['errcode'] ?? -1) !== 0) {
             throw new ApiException(Doo::translate('企微 API 错误') . " [{$path}]: {$resp['errcode']} {$resp['errmsg']}");
         }

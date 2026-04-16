@@ -219,7 +219,9 @@ export default {
         // ── 企微 OAuth 回调处理 ──
         const urlParams = $A.urlParameterAll();
         if (urlParams.wecom_error) {
-            $A.modalError({content: decodeURIComponent(urlParams.wecom_error), language: false});
+            const raw = decodeURIComponent(urlParams.wecom_error);
+            const safe = raw.replace(/[<>&"']/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]));
+            $A.modalError({content: safe, language: false});
             const cleanUrl = window.location.href.replace(/[?&]wecom_error=[^&]*/, '');
             window.history.replaceState(null, '', cleanUrl);
         }
@@ -232,7 +234,7 @@ export default {
             }).then(({data}) => {
                 this.$store.dispatch("handleClearCache", data).then(this.goNext);
             }).catch(({msg}) => {
-                $A.modalError({content: msg || "企微登录失败", language: false});
+                $A.modalError(msg || this.$L('企微登录失败'));
             });
         }
     },

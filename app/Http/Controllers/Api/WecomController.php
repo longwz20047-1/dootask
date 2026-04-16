@@ -30,6 +30,9 @@ class WecomController extends AbstractController
         if (($setting['wecom_open'] ?? 'close') !== 'open') {
             throw new ApiException('企业微信登录未开启');
         }
+        if (empty($setting['wecom_corp_id']) || empty($setting['wecom_secret'])) {
+            throw new ApiException('企业微信配置不完整，请联系管理员');
+        }
         return $setting;
     }
 
