@@ -26,6 +26,9 @@ vars.yaml
 docker-compose.override.yml
 docker-compose.override.yaml
 
+# Security research (RE / license patch notes) - keep local only
+docs/superpowers/research/
+
 # IDE and editor files
 .cursor/*
 !.cursor/rules/
