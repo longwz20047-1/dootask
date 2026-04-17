@@ -22,6 +22,10 @@
 .env
 vars.yaml
 
+# Docker local overrides (per-environment, not tracked)
+docker-compose.override.yml
+docker-compose.override.yaml
+
 # IDE and editor files
 .cursor/*
 !.cursor/rules/
