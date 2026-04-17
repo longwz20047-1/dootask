@@ -891,7 +891,9 @@ class SystemController extends AbstractController
             }
         }
         if ($data['info']['people'] > 0 && $data['user_count'] > $data['info']['people']) {
-            $data['error'][] = '终端用户数超过License限制';
+            // license 人数提示已关闭（自部署场景，doo.so 已 patch 解除上限）
+            // 详见 docs/superpowers/research/2026-04-17-doo-so-license-patch-research.md
+            // $data['error'][] = '终端用户数超过License限制';
         }
         if ($data['info']['expired_at'] && strtotime($data['info']['expired_at']) <= Timer::time()) {
             $data['error'][] = '终端License已过期';
