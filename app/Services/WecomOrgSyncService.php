@@ -299,6 +299,8 @@ class WecomOrgSyncService
                 if ($user && !$user->isAdmin() && empty($user->disable_at)) {
                     $user->disable_at = $now;
                     $user->save();
+                    UserDepartment::where('owner_userid', $user->userid)
+                        ->update(['owner_userid' => 0]);
                     $stats['disabled']++;
                     Log::info("[WecomOrgSync] 员工离职禁用: wecom_userid={$binding->wecom_userid} userid={$binding->userid}");
                 }
@@ -316,6 +318,12 @@ class WecomOrgSyncService
                 if ($user && $user->disable_at) {
                     $user->disable_at = null;
                     $user->save();
+                    $deptIds = is_array($user->department) ? $user->department : [];
+                    if (!empty($deptIds)) {
+                        UserDepartment::whereIn('id', $deptIds)
+                            ->where('owner_userid', 0)
+                            ->update(['owner_userid' => $user->userid]);
+                    }
                     $stats['resurrected']++;
                     Log::info("[WecomOrgSync] 员工复活启用: wecom_userid={$binding->wecom_userid} userid={$binding->userid}");
                 }
@@ -566,6 +574,8 @@ class WecomOrgSyncService
             $binding->save();
             $user->disable_at = $now;
             $user->save();
+            UserDepartment::where('owner_userid', $user->userid)
+                ->update(['owner_userid' => 0]);
             $recycled++;
 
             Log::info("[WecomQuota] 回收名额（禁用）: {$user->email} userid={$user->userid}");

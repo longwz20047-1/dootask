@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Exceptions\ApiException;
 use App\Models\User;
+use App\Models\UserDepartment;
 use App\Models\UserWecomBinding;
 use App\Module\Base;
 use App\Module\Doo;
@@ -153,6 +154,12 @@ class WecomController extends AbstractController
             if ($user->disable_at && !in_array('disable', $user->identity)) {
                 $user->disable_at = null;
                 $user->save();
+                $deptIds = is_array($user->department) ? $user->department : [];
+                if (!empty($deptIds)) {
+                    UserDepartment::whereIn('id', $deptIds)
+                        ->where('owner_userid', 0)
+                        ->update(['owner_userid' => $user->userid]);
+                }
             }
             if ($user->isDisable()) {
                 return redirect($this->frontendUrl("#/login?wecom_error=" . urlencode(Doo::translate('账号已停用或不存在'))));
@@ -224,6 +231,12 @@ class WecomController extends AbstractController
                 if ($user->disable_at && !in_array('disable', $user->identity)) {
                     $user->disable_at = null;
                     $user->save();
+                    $deptIds = is_array($user->department) ? $user->department : [];
+                    if (!empty($deptIds)) {
+                        UserDepartment::whereIn('id', $deptIds)
+                            ->where('owner_userid', 0)
+                            ->update(['owner_userid' => $user->userid]);
+                    }
                 }
                 return $user;
             }
