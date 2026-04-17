@@ -136,11 +136,25 @@ class WecomController extends AbstractController
             return redirect($this->frontendUrl("#/login?wecom_error=" . urlencode(Doo::translate('非企业成员，无法登录'))));
         }
 
-        $binding = UserWecomBinding::findByWecom($corpId, $wecomUserId);
+        $binding = UserWecomBinding::findByWecomIncludeInactive($corpId, $wecomUserId);
 
         if ($binding) {
+            // 被标记离职但重新登录 → 自动复活
+            if ($binding->unbind_at) {
+                $binding->unbind_at = null;
+                $binding->save();
+                Log::info("[WecomOAuth] 员工复活启用: wecom_userid={$wecomUserId} userid={$binding->userid}");
+            }
             $user = User::whereUserid($binding->userid)->first();
-            if (!$user || $user->isDisable()) {
+            if (!$user) {
+                return redirect($this->frontendUrl("#/login?wecom_error=" . urlencode(Doo::translate('账号已停用或不存在'))));
+            }
+            // 用户被禁用（可能是 disable_at 或 identity='disable'）→ 自动解除 disable_at（管理员显式设 disable 才阻止）
+            if ($user->disable_at && !in_array('disable', $user->identity)) {
+                $user->disable_at = null;
+                $user->save();
+            }
+            if ($user->isDisable()) {
                 return redirect($this->frontendUrl("#/login?wecom_error=" . urlencode(Doo::translate('账号已停用或不存在'))));
             }
             $binding->last_login_at = Carbon::now();
@@ -198,10 +212,19 @@ class WecomController extends AbstractController
      */
     private function silentRegister(array $setting, string $corpId, string $wecomUserId): User
     {
-        $existingBinding = UserWecomBinding::findByWecom($corpId, $wecomUserId);
+        // 优先使用已有 binding（含已离职）→ 避免产生重复绑定
+        $existingBinding = UserWecomBinding::findByWecomIncludeInactive($corpId, $wecomUserId);
         if ($existingBinding) {
+            if ($existingBinding->unbind_at) {
+                $existingBinding->unbind_at = null;
+                $existingBinding->save();
+            }
             $user = User::whereUserid($existingBinding->userid)->first();
             if ($user) {
+                if ($user->disable_at && !in_array('disable', $user->identity)) {
+                    $user->disable_at = null;
+                    $user->save();
+                }
                 return $user;
             }
         }
@@ -209,7 +232,7 @@ class WecomController extends AbstractController
         try {
             return $this->doSilentRegister($setting, $corpId, $wecomUserId);
         } catch (\Illuminate\Database\QueryException $e) {
-            $binding = UserWecomBinding::findByWecom($corpId, $wecomUserId);
+            $binding = UserWecomBinding::findByWecomIncludeInactive($corpId, $wecomUserId);
             if ($binding) {
                 $user = User::whereUserid($binding->userid)->first();
                 if ($user) {
@@ -386,11 +409,14 @@ class WecomController extends AbstractController
         $corpId = $setting['wecom_corp_id'] ?? '';
 
         return Base::retSuccess('success', [
-            'wecom_org_sync' => ($setting['wecom_org_sync'] ?? 'close') === 'open',
-            'department_mappings' => \App\Models\WecomDepartmentMapping::where('wecom_corp_id', $corpId)->count(),
-            'user_bindings' => UserWecomBinding::where('wecom_corp_id', $corpId)->count(),
-            'total_users' => User::count(),
-            'total_departments' => \App\Models\UserDepartment::count(),
+            'wecom_org_sync'        => ($setting['wecom_org_sync'] ?? 'close') === 'open',
+            'department_mappings'   => \App\Models\WecomDepartmentMapping::where('wecom_corp_id', $corpId)->whereNull('lost_at')->count(),
+            'department_lost'       => \App\Models\WecomDepartmentMapping::where('wecom_corp_id', $corpId)->whereNotNull('lost_at')->count(),
+            'user_bindings'         => UserWecomBinding::where('wecom_corp_id', $corpId)->whereNull('unbind_at')->count(),
+            'user_unbound'          => UserWecomBinding::where('wecom_corp_id', $corpId)->whereNotNull('unbind_at')->count(),
+            'total_users'           => User::count(),
+            'total_departments'     => \App\Models\UserDepartment::count(),
+            'last_sync_at'          => Cache::get("wecom_last_sync_at:{$corpId}") ?: '',
         ]);
     }
 

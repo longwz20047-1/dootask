@@ -156,13 +156,19 @@ class WecomOrgSyncService
             }
         }
 
-        // 清理僵尸映射
-        if (!empty($activeWecomDeptIds)) {
-            $staleCount = WecomDepartmentMapping::where('wecom_corp_id', $this->corpId)
-                ->whereNotIn('wecom_dept_id', $activeWecomDeptIds)
-                ->delete();
-            $stats['deleted'] = $staleCount;
-        }
+        // 差集处理：企微已删除的部门 → 软标记 lost_at（不删 mapping，可恢复）
+        // 企微重新添加同 id 部门 → 清除 lost_at 复活
+        $now = \Carbon\Carbon::now();
+        $lostCount = WecomDepartmentMapping::where('wecom_corp_id', $this->corpId)
+            ->whereNotIn('wecom_dept_id', $activeWecomDeptIds ?: [0])
+            ->whereNull('lost_at')
+            ->update(['lost_at' => $now]);
+        $recoveredCount = WecomDepartmentMapping::where('wecom_corp_id', $this->corpId)
+            ->whereIn('wecom_dept_id', $activeWecomDeptIds ?: [0])
+            ->whereNotNull('lost_at')
+            ->update(['lost_at' => null]);
+        $stats['lost'] = $lostCount;
+        $stats['recovered'] = $recoveredCount;
 
         Log::info('[WecomOrgSync] 部门同步完成', $stats);
         return $stats;
@@ -275,7 +281,114 @@ class WecomOrgSyncService
             }
         }
 
+        // 离职检测：binding 在库但企微已无此人 → 标记 unbind + 禁用 user
+        $stats['disabled'] = 0;
+        $stats['resurrected'] = 0;
+        $activeWecomUserIds = $this->collectAllWecomUserIds();
+        if (!empty($activeWecomUserIds)) {
+            $now = \Carbon\Carbon::now();
+
+            $leavers = UserWecomBinding::where('wecom_corp_id', $this->corpId)
+                ->whereNotIn('wecom_userid', $activeWecomUserIds)
+                ->whereNull('unbind_at')
+                ->get();
+            foreach ($leavers as $binding) {
+                $binding->unbind_at = $now;
+                $binding->save();
+                $user = User::whereUserid($binding->userid)->first();
+                if ($user && !$user->isAdmin() && empty($user->disable_at)) {
+                    $user->disable_at = $now;
+                    $user->save();
+                    $stats['disabled']++;
+                    Log::info("[WecomOrgSync] 员工离职禁用: wecom_userid={$binding->wecom_userid} userid={$binding->userid}");
+                }
+            }
+
+            // 复活检测：binding 已 unbind 但企微重新出现 → 清 unbind + 清 disable
+            $resurrects = UserWecomBinding::where('wecom_corp_id', $this->corpId)
+                ->whereIn('wecom_userid', $activeWecomUserIds)
+                ->whereNotNull('unbind_at')
+                ->get();
+            foreach ($resurrects as $binding) {
+                $binding->unbind_at = null;
+                $binding->save();
+                $user = User::whereUserid($binding->userid)->first();
+                if ($user && $user->disable_at) {
+                    $user->disable_at = null;
+                    $user->save();
+                    $stats['resurrected']++;
+                    Log::info("[WecomOrgSync] 员工复活启用: wecom_userid={$binding->wecom_userid} userid={$binding->userid}");
+                }
+            }
+        }
+
         Log::info('[WecomOrgSync] 批量用户同步完成', $stats);
+        return $stats;
+    }
+
+    /**
+     * 汇总企微全员 userid（用于差集检测）
+     */
+    private function collectAllWecomUserIds(): array
+    {
+        $all = [];
+        $mappings = WecomDepartmentMapping::where('wecom_corp_id', $this->corpId)
+            ->whereNull('lost_at')
+            ->get();
+        foreach ($mappings as $mapping) {
+            try {
+                $members = $this->client->getDepartmentUsers($mapping->wecom_dept_id);
+            } catch (\Throwable $e) {
+                Log::info("[WecomOrgSync] 收集成员失败: dept={$mapping->wecom_dept_id}", ['error' => $e->getMessage()]);
+                continue;
+            }
+            foreach ($members as $m) {
+                $uid = $m['userid'] ?? '';
+                if ($uid) $all[$uid] = true;
+            }
+        }
+        return array_keys($all);
+    }
+
+    /**
+     * 补跑部门负责人（在 syncUsers 建好 binding 后调用，回填 owner_userid）
+     */
+    public function syncDepartmentLeaders(): array
+    {
+        $stats = ['updated' => 0, 'skipped' => 0];
+
+        $wecomDepts = $this->client->getDepartmentList();
+        if (empty($wecomDepts)) return $stats;
+
+        $deptLeaderMap = [];
+        foreach ($wecomDepts as $d) {
+            $deptLeaderMap[$d['id']] = $d['department_leader'][0] ?? '';
+        }
+
+        $mappings = WecomDepartmentMapping::where('wecom_corp_id', $this->corpId)
+            ->whereNull('lost_at')
+            ->get();
+        foreach ($mappings as $mapping) {
+            $leaderWecomId = $deptLeaderMap[$mapping->wecom_dept_id] ?? '';
+            if (!$leaderWecomId) {
+                $stats['skipped']++;
+                continue;
+            }
+            $binding = UserWecomBinding::findByWecom($this->corpId, $leaderWecomId);
+            if (!$binding) {
+                $stats['skipped']++;
+                continue;
+            }
+            $dept = UserDepartment::find($mapping->dootask_dept_id);
+            if ($dept && (int)$dept->owner_userid !== (int)$binding->userid) {
+                $dept->owner_userid = $binding->userid;
+                $dept->save();
+                $stats['updated']++;
+            } else {
+                $stats['skipped']++;
+            }
+        }
+        Log::info('[WecomOrgSync] 部门负责人补跑完成', $stats);
         return $stats;
     }
 
@@ -368,22 +481,30 @@ class WecomOrgSyncService
      */
     public function syncAll(): array
     {
+        // 顺序：建部门 → 批量建用户（含离职/复活） → 更新已有用户部门归属 → 补跑部门负责人
         $deptStats = $this->syncDepartments();
         $userCreateStats = $this->syncUsers();
         $userDeptStats = $this->syncUserDepartments();
+        $leaderStats = $this->syncDepartmentLeaders();
+
+        $lastSyncAt = \Carbon\Carbon::now()->toDateTimeString();
+        \Cache::put("wecom_last_sync_at:{$this->corpId}", $lastSyncAt, 60 * 60 * 24 * 30);
+
         return [
             'departments' => $deptStats,
             'users_created' => $userCreateStats,
             'users_dept_updated' => $userDeptStats,
+            'leaders' => $leaderStats,
+            'last_sync_at' => $lastSyncAt,
         ];
     }
 
     // ══════════════════════════════════════
-    // License 名额管理（3 人限制突破）
+    // License 名额管理
     // ══════════════════════════════════════
 
     /**
-     * 创建用户，License 超限时自动回收企微用户名额重试
+     * 创建用户，License 超限时尝试禁用最久不登录的企微员工让位
      */
     public static function createUserWithQuotaRetry(string $email, string $password, string $corpId): User
     {
@@ -394,18 +515,14 @@ class WecomOrgSyncService
             }
             return $user;
         } catch (\Throwable $e) {
-            if (!app()->environment('local', 'development', 'testing')) {
-                throw $e;
-            }
-
             $licenseInfo = Doo::license();
             $maxPeople = $licenseInfo['people'] ?? 0;
-            if ($maxPeople <= 0 || $maxPeople > 10) {
-                throw $e;
+            if ($maxPeople <= 0) {
+                throw new ApiException(Doo::translate('License 人数已达上限，请联系管理员升级或在后台禁用离职员工'));
             }
 
             if (!self::recycleWecomQuota($corpId, $maxPeople)) {
-                throw $e;
+                throw new ApiException(Doo::translate('License 人数已达上限，请联系管理员升级或在后台禁用离职员工'));
             }
 
             $user = Doo::userCreate($email, $password);
@@ -417,7 +534,7 @@ class WecomOrgSyncService
     }
 
     /**
-     * 回收企微用户名额（仅开发/测试环境）
+     * 回收企微用户名额（禁用 + 软解绑，保留数据可恢复）
      */
     private static function recycleWecomQuota(string $corpId, int $maxPeople): bool
     {
@@ -429,25 +546,29 @@ class WecomOrgSyncService
         $needed = $activeCount - $maxPeople + 1;
 
         $candidates = UserWecomBinding::where('wecom_corp_id', $corpId)
-            ->orderBy('last_login_at', 'asc')
+            ->whereNull('unbind_at')
+            ->orderByRaw('last_login_at IS NULL DESC, last_login_at ASC')
             ->orderBy('id', 'asc')
-            ->take($needed + 2)
+            ->take($needed + 5)
             ->get();
 
+        $now = \Carbon\Carbon::now();
         $recycled = 0;
         foreach ($candidates as $binding) {
             if ($recycled >= $needed) break;
 
             $user = User::whereUserid($binding->userid)->first();
-            if (!$user || $user->isAdmin()) {
+            if (!$user || $user->isAdmin() || $user->disable_at) {
                 continue;
             }
 
-            $binding->delete();
-            $user->forceDelete();
+            $binding->unbind_at = $now;
+            $binding->save();
+            $user->disable_at = $now;
+            $user->save();
             $recycled++;
 
-            Log::info("[WecomDev] 回收用户名额: {$user->email} (userid={$user->userid})");
+            Log::info("[WecomQuota] 回收名额（禁用）: {$user->email} userid={$user->userid}");
         }
 
         return $recycled > 0;

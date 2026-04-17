@@ -276,6 +276,8 @@ class IndexController extends InvokeController
         Task::deliver(new ManticoreSyncTask());
         // AI 任务建议
         Task::deliver(new AiTaskLoopTask());
+        // 企微组织架构定时同步
+        Task::deliver(new \App\Tasks\WecomOrgSyncTask());
 
         return "success";
     }

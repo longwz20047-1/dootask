@@ -87,6 +87,15 @@
                             </RadioGroup>
                             <div class="form-tip">{{$L('开启后可同步企微部门与成员到 DooTask')}}</div>
                         </FormItem>
+                        <FormItem v-if="formData.wecom_org_sync === 'open'" :label="$L('同步操作')">
+                            <Button :loading="orgSyncLoad" type="primary" @click="syncOrg">{{ $L('立即同步组织架构') }}</Button>
+                            <div class="form-tip" v-if="orgStatus">
+                                <div>{{$L('部门映射')}}: {{orgStatus.department_mappings || 0}}<span v-if="orgStatus.department_lost > 0" style="color:#ed4014;">（{{$L('已失联部门')}}: {{orgStatus.department_lost}}）</span></div>
+                                <div>{{$L('用户绑定')}}: {{orgStatus.user_bindings || 0}}<span v-if="orgStatus.user_unbound > 0" style="color:#ed4014;">（{{$L('已禁用用户')}}: {{orgStatus.user_unbound}}）</span></div>
+                                <div v-if="orgStatus.last_sync_at">{{$L('最后同步时间')}}: {{orgStatus.last_sync_at}}</div>
+                                <div v-else>{{$L('尚未同步')}}</div>
+                            </div>
+                        </FormItem>
                     </template>
                 </div>
             </div>
@@ -112,11 +121,14 @@ export default {
             ruleData: {},
 
             testLoad: false,
+            orgSyncLoad: false,
+            orgStatus: null,
         }
     },
 
     mounted() {
         this.systemSetting();
+        this.loadOrgStatus();
     },
 
     computed: {
@@ -171,7 +183,45 @@ export default {
             }).finally(_ => {
                 this.testLoad = false;
             });
-        }
+        },
+
+        loadOrgStatus() {
+            this.$store.dispatch("call", {
+                url: 'wecom/org/status',
+                method: 'get',
+            }).then(({data}) => {
+                this.orgStatus = data;
+            }).catch(_ => {
+                this.orgStatus = null;
+            });
+        },
+
+        syncOrg() {
+            if (this.orgSyncLoad) return;
+            this.orgSyncLoad = true;
+            this.$store.dispatch("call", {
+                url: 'wecom/org/sync',
+                method: 'post',
+            }).then(({data}) => {
+                const dept = data.departments || {};
+                const users = data.users_created || {};
+                const leaders = data.leaders || {};
+                const deptLine = $L('部门') + `: ${dept.created || 0} ${$L('新增')}, ${dept.updated || 0} ${$L('更新')}, ${dept.lost || 0} ${$L('失联')}, ${dept.recovered || 0} ${$L('恢复')}`;
+                const userLine = $L('用户') + `: ${users.created || 0} ${$L('新增')}, ${users.skipped || 0} ${$L('跳过')}, ${users.disabled || 0} ${$L('离职禁用')}, ${users.resurrected || 0} ${$L('复活')}`;
+                const leaderLine = $L('部门负责人') + `: ${leaders.updated || 0} ${$L('已更新')}`;
+                $A.modalInfo({
+                    title: $L('同步完成'),
+                    content: `${deptLine}<br>${userLine}<br>${leaderLine}`,
+                    okText: $L('确定'),
+                    language: false,
+                });
+                this.loadOrgStatus();
+            }).catch(({msg}) => {
+                $A.modalError(msg || $L('同步失败'));
+            }).finally(_ => {
+                this.orgSyncLoad = false;
+            });
+        },
     }
 }
 </script>
