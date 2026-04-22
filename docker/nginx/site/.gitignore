@@ -1,2 +1,3 @@
 *
 !.gitignore
+!wecom-internal-acl.conf
