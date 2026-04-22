@@ -4,14 +4,16 @@ namespace Tests\Feature;
 
 use App\Models\User;
 use App\Models\UserWecomBinding;
-use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class WecomInternalTokenTest extends TestCase
 {
-    use RefreshDatabase;
+    // DatabaseTransactions: 每 test BEGIN/ROLLBACK, 不跑 migrate:fresh
+    // (Swoole 下 migrate:fresh 重跑会遇 Config Facade 状态污染)
+    use DatabaseTransactions;
 
     private const CORP_ID      = 'ww_test_corp';
     private const WECOM_USERID = 'WxZhangSan';
