@@ -37,7 +37,7 @@ class WecomInternalTokenTest extends TestCase
         $user->email      = "test_{$seq}_" . Str::random(8) . '@example.com';
         $user->nickname   = "test_user_{$seq}";
         $user->encrypt    = Str::random(16);
-        $user->password   = bcrypt('password');
+        $user->password   = 'test-password';   // pre_users.password string(50), 且本测试不走登录路径
         $user->identity   = $identity;
         $user->disable_at = $disabled ? now() : null;
         $user->save();
