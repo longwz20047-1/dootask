@@ -444,4 +444,83 @@ class WecomController extends AbstractController
     {
         return \App\Services\WecomOrgSyncService::createUserWithQuotaRetry($email, $password, $corpId);
     }
+
+    // ══════════════════════════════════════
+    // 内部端点（仅限受信客户端，如 AgentStudio）
+    // ══════════════════════════════════════
+    //
+    // 路由约定：InvokeController 魔法路由将方法名 `internal__generate_token` (双下划线)
+    // 自动映射为 HTTP 路径 `POST /api/wecom/internal/generate_token`
+    // （参考既有 `org__sync` → `api/wecom/org/sync`）。无需在 routes/api.php 手动注册。
+    //
+    // 错误返回风格：本端点使用 Base::retError('...') 返回错误（而非 throw ApiException）。
+    // 两种风格功能等价（Handler.php:61 统一处理），选用 retError 与 WecomController
+    // 其它方法（org__sync / org__status）一致。
+
+    /**
+     * @api {post} api/wecom/internal/generate_token 内部 token 签发（企微身份）
+     *
+     * @apiDescription **内部端点**，仅限受信客户端（AgentStudio）调用。
+     *                  不走 User::auth()，通过 X-Internal-Secret 验证。
+     *                  生产环境必须叠加 IP 白名单（nginx 层）。
+     *
+     *                  入参是企微原生字段（corp_id + wecom_userid），
+     *                  内部通过 UserWecomBinding::findByWecom() 反查 dootask userid 再签 token。
+     *                  这样 bridge 侧完全不需要知道 dootask userid，身份映射职责收敛在 dootask 内部。
+     * @apiVersion 1.0.0
+     * @apiGroup wecom
+     * @apiName internal_generate_token
+     *
+     * @apiHeader {String} X-Internal-Secret 服务端预共享密钥
+     * @apiParam  {String} wecom_corp_id  企业 CorpID（企微企业唯一标识）
+     * @apiParam  {String} wecom_userid   企微成员 UserId（企业内唯一）
+     *
+     * @apiSuccess {Number} ret 1=success
+     * @apiSuccess {Object} data
+     * @apiSuccess {String} data.token 1 小时有效期的 DooTask token
+     * @apiSuccess {Number} data.expires_in 3600（秒）
+     * @apiSuccess {Number} data.dootask_userid 回显：解析到的 dootask userid
+     */
+    public function internal__generate_token()
+    {
+        // 1. 校验 secret（常数时间比较防时序攻击）
+        $secret = trim(Request::header('X-Internal-Secret', ''));
+        $expected = env('INTERNAL_API_SECRET', '');
+        if (!$expected || !hash_equals($expected, $secret)) {
+            return Base::retError('invalid secret');
+        }
+
+        // 2. 校验入参（corp_id + wecom_userid 都必填）
+        $corpId = trim(Request::input('wecom_corp_id', ''));
+        $wecomUserId = trim(Request::input('wecom_userid', ''));
+        if ($corpId === '' || $wecomUserId === '') {
+            return Base::retError('wecom_corp_id and wecom_userid are required');
+        }
+
+        // 3. 查绑定（UserWecomBinding 由 WecomOrgSyncService 维护）
+        $binding = UserWecomBinding::findByWecom($corpId, $wecomUserId);
+        if (!$binding) {
+            return Base::retError('wecom user not bound to any dootask account');
+        }
+
+        // 4. 查 dootask 用户并校验禁用 — P0-2 (review L101-181)
+        // isDisable(true) 同时检查 identity+disable_at，防管理员显式禁用（identity=',disable,'）绕过
+        $user = User::where('userid', $binding->userid)->first();
+        if (!$user || $user->isDisable(true)) {
+            return Base::retError('dootask user not found or disabled');
+        }
+
+        // 5. 更新 last_login_at — P1-7: 与 OAuth callback WecomController.php:167 保持一致
+        $binding->last_login_at = Carbon::now();
+        $binding->save();
+
+        // 6. 签发 1 小时 token（generateTokenNoDevice 第二参数是秒数）
+        $token = User::generateTokenNoDevice($user, 3600);
+
+        return Base::retSuccess('success', [
+            'token' => $token,
+            'expires_in' => 3600,
+            'dootask_userid' => $user->userid,
+        ]);
+    }
 }
