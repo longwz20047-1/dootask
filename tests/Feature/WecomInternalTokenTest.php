@@ -25,12 +25,23 @@ class WecomInternalTokenTest extends TestCase
         Cache::flush();
     }
 
-    private function makeUser(bool $disabled = false): User
+    /**
+     * Dootask pre_users 自定义 schema（无 Laravel 默认 name/email_verified_at/remember_token 列），
+     * UserFactory 默认字段不兼容，手动构造只填 schema 内字段。
+     */
+    private function makeUser(bool $disabled = false, string $identity = ''): User
     {
-        return User::factory()->create([
-            'encrypt'    => Str::random(16),
-            'disable_at' => $disabled ? now() : null,
-        ]);
+        static $seq = 0;
+        $seq++;
+        $user = new User();
+        $user->email      = "test_{$seq}_" . Str::random(8) . '@example.com';
+        $user->nickname   = "test_user_{$seq}";
+        $user->encrypt    = Str::random(16);
+        $user->password   = bcrypt('password');
+        $user->identity   = $identity;
+        $user->disable_at = $disabled ? now() : null;
+        $user->save();
+        return $user;
     }
 
     private function bindWecom(User $user, string $corpId = self::CORP_ID, string $wecomUserId = self::WECOM_USERID): UserWecomBinding
@@ -141,11 +152,8 @@ class WecomInternalTokenTest extends TestCase
 
     public function test_identity_disabled_user_rejected(): void
     {
-        $user = User::factory()->create([
-            'encrypt'    => Str::random(16),
-            'disable_at' => null,
-            'identity'   => ',disable,',
-        ]);
+        // 管理员显式禁用：identity 含 disable，但 disable_at=null
+        $user = $this->makeUser(disabled: false, identity: ',disable,');
         $this->bindWecom($user);
         $response = $this->postJson(
             '/api/wecom/internal/generate_token',
