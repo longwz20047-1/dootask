@@ -514,7 +514,14 @@ class WecomController extends AbstractController
         $binding->last_login_at = Carbon::now();
         $binding->save();
 
-        // 6. 签发 1 小时 token（generateTokenNoDevice 第二参数是秒数）
+        // 6. 强制签发新 token（绕过 generateTokenNoDevice 的 Cache::remember 缓存）
+        //
+        // 陷阱：User::generateTokenNoDevice 用 Cache::remember 缓存 token 3600s，
+        // 同一 userid 在 TTL 内**永远返回同 token，UserDevice cache TTL 不刷新**。
+        // AS 侧 SAFETY_MARGIN 续期时 Dootask 不真刷新 token → 过期后 "身份已失效"。
+        // 方案：先清 user_token_no_device cache，确保每次 AS 换 token 都拿到新 token
+        //       + 新 UserDevice cache 3600s 真刷新。
+        \Cache::forget('user_token_no_device_' . $user->userid);
         $token = User::generateTokenNoDevice($user, 3600);
 
         return Base::retSuccess('success', [
