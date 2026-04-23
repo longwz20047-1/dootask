@@ -278,6 +278,8 @@ class IndexController extends InvokeController
         Task::deliver(new AiTaskLoopTask());
         // 企微组织架构定时同步
         Task::deliver(new \App\Tasks\WecomOrgSyncTask());
+        // M1 企微任务通知重试调度（Task 内部 Cache 锁节流到 5 分钟执行一次）
+        Task::deliver(new \App\Tasks\WecomPushRetryTask());
 
         return "success";
     }
