@@ -64,7 +64,9 @@ class WecomNotifierService
             'end_at'           => optional($task->end_at)->toDateTimeString(),
             'creator_userid'   => $task->userid,
             'creator_nickname' => optional(User::find($task->userid))->nickname ?? '',
-            'priority'         => $task->p_color ?? '',
+            // p_name 是优先级名称（"高/中/低"），不是 p_color 颜色值也不是 p_level 数值
+            // Renderer (Task 3) 模板显示 **优先级**：{priority} 直接作为文字渲染
+            'priority'         => $task->p_name ?? '',
         ];
 
         // 3. 渲染 markdown（Service 实例化 Renderer；渲染异常让上层冒泡不吞）
