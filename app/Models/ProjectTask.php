@@ -2112,19 +2112,23 @@ class ProjectTask extends AbstractModel
             // 使用 AbstractObserver::taskDeliver（public static 跨类调用合法，自带 swoole 守卫）
             // 任一步骤异常不中断站内推送循环
             // ──────────────────────────────────────────────────
-            if ($type === 0 && \App\Services\Wecom\WecomNotifierService::shouldPush($receiver)) {
+            // fixup: shouldPush 调用也纳入 try，防 UserWecomBinding DB QueryException
+            // 穿透 foreach 破坏后续 receivers 的站内推送（spec §4.1 "异常完全隔离"）
+            if ($type === 0) {
                 try {
-                    $notifierService = app(\App\Services\Wecom\WecomNotifierService::class);
-                    $notificationId = $notifierService->enqueue($this, $receiver, 'task_assigned');
-                    if ($notificationId !== null) {
-                        \App\Observers\AbstractObserver::taskDeliver(
-                            new \App\Tasks\WecomPushTask($notificationId)
-                        );
+                    if (\App\Services\Wecom\WecomNotifierService::shouldPush($receiver)) {
+                        $notifierService = app(\App\Services\Wecom\WecomNotifierService::class);
+                        $notificationId = $notifierService->enqueue($this, $receiver, 'task_assigned');
+                        if ($notificationId !== null) {
+                            \App\Observers\AbstractObserver::taskDeliver(
+                                new \App\Tasks\WecomPushTask($notificationId)
+                            );
+                        }
+                        // enqueue 返 null = binding 无效 或 unique 冲突命中既有行，不派发 Task
                     }
-                    // enqueue 返 null = binding 无效 或 unique 冲突命中既有行，不派发 Task
                 } catch (\Throwable $e) {
                     \Illuminate\Support\Facades\Log::warning(
-                        '[WecomPush] enqueue/dispatch failed, station msg unaffected',
+                        '[WecomPush] shouldPush/enqueue/dispatch failed, station msg unaffected',
                         ['task_id' => $this->id, 'receiver_userid' => $receiver->userid, 'error' => $e->getMessage()]
                     );
                 }
