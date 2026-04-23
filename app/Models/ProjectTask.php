@@ -2106,6 +2106,29 @@ class ProjectTask extends AbstractModel
                     ],
                 ], in_array($type, [0, 3]) ? $userid : $botUser->userid);
             }
+            // ──────────────────────────────────────────────────
+            // M1 新增：企微推送（双轨并存，spec §1 决策 3）
+            // 仅 type=0（新任务分配）；type=1/2/3 留给 M2
+            // 使用 AbstractObserver::taskDeliver（public static 跨类调用合法，自带 swoole 守卫）
+            // 任一步骤异常不中断站内推送循环
+            // ──────────────────────────────────────────────────
+            if ($type === 0 && \App\Services\Wecom\WecomNotifierService::shouldPush($receiver)) {
+                try {
+                    $notifierService = app(\App\Services\Wecom\WecomNotifierService::class);
+                    $notificationId = $notifierService->enqueue($this, $receiver, 'task_assigned');
+                    if ($notificationId !== null) {
+                        \App\Observers\AbstractObserver::taskDeliver(
+                            new \App\Tasks\WecomPushTask($notificationId)
+                        );
+                    }
+                    // enqueue 返 null = binding 无效 或 unique 冲突命中既有行，不派发 Task
+                } catch (\Throwable $e) {
+                    \Illuminate\Support\Facades\Log::warning(
+                        '[WecomPush] enqueue/dispatch failed, station msg unaffected',
+                        ['task_id' => $this->id, 'receiver_userid' => $receiver->userid, 'error' => $e->getMessage()]
+                    );
+                }
+            }
         }
     }
 
