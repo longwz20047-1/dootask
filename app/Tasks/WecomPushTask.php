@@ -92,8 +92,19 @@ class WecomPushTask extends AbstractTask
         );
 
         // ⑤ 结果处理
+        // 注意：Ihttp::ihttp_request 在 curl 成功（任何 HTTP status）时都返 retSuccess（ret=1），
+        // 所以 Base::isError 只捕获 curl 层失败（DNS/连接/超时/empty data），
+        // HTTP 4xx/5xx 必须用 $result['msg'] 字段（Ihttp 把 HTTP code 塞进 msg）二次判断，
+        // 否则 last_error 字段会丢失状态码，生产排障困难。
         if (Base::isError($result)) {
             $row->markFailed($result['msg'] ?? 'network error');
+            return;
+        }
+
+        $httpCode = (int) ($result['msg'] ?? 0);
+        if ($httpCode < 200 || $httpCode >= 300) {
+            $rawBody = substr((string) ($result['data'] ?? ''), 0, 200);
+            $row->markFailed("HTTP {$httpCode}: {$rawBody}");
             return;
         }
 
