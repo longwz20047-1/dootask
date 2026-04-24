@@ -11,15 +11,6 @@
 **分配人**：{!! $escape($creator_nickname) !!}
 **优先级**：{!! $escape($priority ?: '未设置') !!}
 
-@php
-    // 通过 /api/wecom/entry?redirect= 包一层，让企微 WebView 走静默 OAuth 再跳任务详情
-    // 未登录：entry → OAuth → callback → #/login?wecom_ticket=X&from=<task_url> → login.vue goNext → 任务详情
-    // 已登录：entry 直接 302 到 app.url + redirect path
-    $taskPath = '/#/single/project/' . (int) $project_id . '/dialog/task/' . (int) $task_id;
-    $detailUrl = rtrim($dootask_base_url, '/') . '/api/wecom/entry?redirect=' . rawurlencode($taskPath);
-@endphp
-[查看详情 →]({!! $detailUrl !!})
-
 ---
 💬 你可以直接发送：
 

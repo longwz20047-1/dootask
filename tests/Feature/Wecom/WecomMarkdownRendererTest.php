@@ -136,9 +136,9 @@ class WecomMarkdownRendererTest extends TestCase
         $this->assertStringContainsString('**优先级**：高', $markdown);
         // 5 条话术都含 #42
         $this->assertEquals(5, substr_count($markdown, '#42'));
-        // 详情链接格式：包 entry?redirect= OAuth 静默登录链路（非裸 SPA 路径）
-        $this->assertStringContainsString('/api/wecom/entry?redirect=', $markdown);
-        // rawurlencode 后的 hash path（/#/single/project/7/dialog/task/42）
-        $this->assertStringContainsString('%2F%23%2Fsingle%2Fproject%2F7%2Fdialog%2Ftask%2F42', $markdown);
+        // 2026-04-24：去掉 "查看详情 →" 链接（企微智能机器人消息链接无法跳自建应用，切 M2 cgi-bin/message/send）
+        // 模板仅保留下面 5 条话术提示让用户回复触发 MCP，不再有 [查看详情 →](url) 行
+        $this->assertStringNotContainsString('[查看详情', $markdown);
+        $this->assertStringNotContainsString('/api/wecom/entry', $markdown);
     }
 }
