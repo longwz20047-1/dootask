@@ -11,6 +11,18 @@
 **分配人**：{!! $escape($creator_nickname) !!}
 **优先级**：{!! $escape($priority ?: '未设置') !!}
 
+@php
+    // 企微 API 限制：消息 URL 点击**不会**进自建应用 WebView，统一在企微内置浏览器打开。
+    // 但经 entry?redirect= 包装后，内置浏览器触发 snsapi_base 静默 OAuth → 自动建 session →
+    // 跳目标路径，**视觉等价 "应用 WebView 已登录任务页"**（2026-04-24 PC+手机双端实测通过）。
+    //
+    // 关键前提：dootask_base_url 必须是企微管理后台 redirect_domain 可信域名（mp.smee-china.com），
+    // 不能是任何反代别名（v3 deploy guide 的 main.smee-china.com/dootask 是历史错占位，会白屏）。
+    $taskPath = '/#/single/task/' . (int) $task_id;
+    $detailUrl = rtrim($dootask_base_url, '/') . '/api/wecom/entry?redirect=' . rawurlencode($taskPath);
+@endphp
+[查看详情 →]({!! $detailUrl !!})
+
 ---
 💬 你可以直接发送：
 
