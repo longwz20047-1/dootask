@@ -136,7 +136,9 @@ class WecomMarkdownRendererTest extends TestCase
         $this->assertStringContainsString('**优先级**：高', $markdown);
         // 5 条话术都含 #42
         $this->assertEquals(5, substr_count($markdown, '#42'));
-        // 详情链接格式
-        $this->assertStringContainsString('/single/project/7/dialog/task/42', $markdown);
+        // 详情链接格式：包 entry?redirect= OAuth 静默登录链路（非裸 SPA 路径）
+        $this->assertStringContainsString('/api/wecom/entry?redirect=', $markdown);
+        // rawurlencode 后的 hash path（/#/single/project/7/dialog/task/42）
+        $this->assertStringContainsString('%2F%23%2Fsingle%2Fproject%2F7%2Fdialog%2Ftask%2F42', $markdown);
     }
 }

@@ -62,6 +62,23 @@ class WecomController extends AbstractController
         return rtrim(config('app.url'), '/') . "/{$hashPath}";
     }
 
+    /**
+     * 清洗 redirect 参数 — 防开放重定向
+     *
+     * 允许：/single/project/1/dialog/task/42  /#/manage/dashboard
+     * 拒绝：//evil.com  /\evil.com  http://evil.com  javascript:xxx  空
+     *
+     * 返空串 = 无效 / 未提供，callback 将跳默认首页
+     */
+    private function sanitizeRedirect(string $redirect): string
+    {
+        if ($redirect === '') return '';
+        if ($redirect[0] !== '/') return '';
+        if (isset($redirect[1]) && ($redirect[1] === '/' || $redirect[1] === '\\')) return '';
+        if (stripos($redirect, '://') !== false) return '';
+        return $redirect;
+    }
+
     // ══════════════════════════════════════
     // OAuth 静默登录
     // ══════════════════════════════════════
@@ -76,8 +93,14 @@ class WecomController extends AbstractController
      */
     public function entry()
     {
+        // M1+ 支持 ?redirect=<path> 深链（如 task 详情），OAuth 完成后自动跳目标页
+        $redirect = $this->sanitizeRedirect((string) Request::input('redirect', ''));
+
         if (Doo::userId() > 0) {
-            return redirect(config('app.url'));
+            $target = $redirect !== ''
+                ? rtrim(config('app.url'), '/') . $redirect
+                : config('app.url');
+            return redirect($target);
         }
 
         try {
@@ -89,6 +112,9 @@ class WecomController extends AbstractController
 
         $state = Str::random(32);
         Cache::put("wecom_state:{$state}", true, 300);
+        if ($redirect !== '') {
+            Cache::put("wecom_redirect:{$state}", $redirect, 300);
+        }
 
         $redirectUri = url('/api/wecom/callback');
         $agentId = intval($setting['wecom_agent_id']);
@@ -190,7 +216,15 @@ class WecomController extends AbstractController
 
         $ticket = Str::random(64);
         Cache::put("wecom_ticket:{$ticket}", $user->toArray() + ['token' => $token], 60);
-        return redirect($this->frontendUrl("#/login?wecom_ticket={$ticket}"));
+
+        // M1+ entry 可能存了 redirect 目标，拼 ?from 让前端 login.vue goNext() 自动跳转
+        $loginQs = "#/login?wecom_ticket={$ticket}";
+        $redirect = Cache::pull("wecom_redirect:{$state}");
+        if ($redirect) {
+            $fromUrl = rtrim(config('app.url'), '/') . $redirect;
+            $loginQs .= '&from=' . rawurlencode($fromUrl);
+        }
+        return redirect($this->frontendUrl($loginQs));
     }
 
     /**
