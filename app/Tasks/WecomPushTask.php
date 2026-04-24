@@ -37,15 +37,16 @@ class WecomPushTask extends AbstractTask
     {
         // ① 原子 UPDATE 占位：status='pending' → 'processing'
         // 抢不到（被其他 worker 抢走 / 已非 pending）直接返回，不抛错
-        $updated = DB::update(
-            "UPDATE wecom_notifications
-             SET status='processing',
-                 processing_at=NOW(),
-                 attempts=attempts+1,
-                 updated_at=NOW()
-             WHERE id=? AND status='pending'",
-            [$this->notificationId]
-        );
+        // 用 query builder 而非 raw SQL — 自动应用 DB_PREFIX（物理表 pre_wecom_notifications）
+        $updated = DB::table('wecom_notifications')
+            ->where('id', $this->notificationId)
+            ->where('status', 'pending')
+            ->update([
+                'status'        => 'processing',
+                'processing_at' => DB::raw('NOW()'),
+                'attempts'      => DB::raw('attempts+1'),
+                'updated_at'    => DB::raw('NOW()'),
+            ]);
         if ($updated === 0) {
             // 说明已被其他 worker 抢走或已转 sent/failed/skipped，跳过
             return;
