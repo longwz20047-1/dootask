@@ -65,13 +65,17 @@ class WecomNotifierService
             'creator_userid'   => $task->userid,
             'creator_nickname' => optional(User::find($task->userid))->nickname ?? '',
             // p_name 是优先级名称（"高/中/低"），不是 p_color 颜色值也不是 p_level 数值
-            // Renderer (Task 3) 模板显示 **优先级**：{priority} 直接作为文字渲染
             'priority'         => $task->p_name ?? '',
+            // M2-zero 扩展字段（按需填，Renderer 判空跳过）
+            'column_name'      => optional($task->column)->name ?? '',
+            'desc_summary'     => mb_substr(strip_tags($task->desc ?? ''), 0, 40),
         ];
 
-        // 3. 渲染 markdown（Service 实例化 Renderer；渲染异常让上层冒泡不吞）
-        $markdown = app(WecomMarkdownRenderer::class)
-            ->renderTaskAssigned($payload, (int) $task->id);
+        // 3. M2-zero · 渲染 2 条消息（template_card + markdown）为 JSON 数组字符串
+        //    bridge 收到后 JSON.parse，按数组顺序 await 串行发，保证"卡片紧邻话术"不被并发插入
+        $messages = app(WecomMarkdownRenderer::class)
+            ->renderTaskAssignedMessages($payload, (int) $task->id);
+        $markdown = json_encode($messages, JSON_UNESCAPED_UNICODE);
 
         // 4. 计算 event_hash（调 Model 静态方法，全仓单一算法 — spec §11 R7）
         $eventHash = WecomNotification::computeEventHash(
