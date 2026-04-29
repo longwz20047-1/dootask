@@ -300,6 +300,48 @@ class ReportFieldTest extends TestCase
         $this->assertEquals('新名', $field->fresh()->name);
     }
 
+    /**
+     * P1 drift fix (Sprint 1 Pass 3 review):
+     * spec §5.1 line ~1683 (v3.20) lists `aggregatable` as a save() input,
+     * but createInstance() previously hardcoded `false`. Verify Request::input
+     * now flows through.
+     */
+    public function test_save_creates_field_with_aggregatable_true(): void
+    {
+        $admin = $this->makeAdmin();
+
+        $resp = $this->callFieldSave($admin, [
+            'scope'        => 'global',
+            'code'         => 'test_aggregatable',
+            'name'         => '可聚合字段',
+            'type'         => 'number',
+            'aggregatable' => true,
+        ]);
+
+        $this->assertSame(1, $resp['ret']);
+        $field = TaskFieldDefinition::where('code', 'test_aggregatable')->first();
+        $this->assertNotNull($field);
+        $this->assertTrue((bool) $field->aggregatable);
+    }
+
+    public function test_save_defaults_aggregatable_to_false_when_omitted(): void
+    {
+        $admin = $this->makeAdmin();
+
+        $resp = $this->callFieldSave($admin, [
+            'scope' => 'global',
+            'code'  => 'test_no_aggregatable',
+            'name'  => '默认非聚合',
+            'type'  => 'text',
+            // omit aggregatable
+        ]);
+
+        $this->assertSame(1, $resp['ret']);
+        $field = TaskFieldDefinition::where('code', 'test_no_aggregatable')->first();
+        $this->assertNotNull($field);
+        $this->assertFalse((bool) $field->aggregatable);
+    }
+
     public function test_edit_builtin_field_rejected(): void
     {
         $admin = $this->makeAdmin();

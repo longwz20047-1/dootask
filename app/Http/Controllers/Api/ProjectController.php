@@ -4244,7 +4244,7 @@ class ProjectController extends AbstractController
                 'sort'               => $sort,
                 'enabled'            => $enabled,
                 'is_builtin'         => false,
-                'aggregatable'       => false,
+                'aggregatable'       => (bool) Request::input('aggregatable', false),
                 'aggregate_strategy' => 'none',
                 'has_index'          => false,
             ]);
