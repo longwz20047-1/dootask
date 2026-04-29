@@ -282,7 +282,10 @@ return [
     |
     */
 
-    'cleaners' => [],
+    'cleaners' => [
+        // [CUSTOM:report-channel] 任务上报字段定义缓存（per-request 静态属性）跨请求清理
+        \App\Cleaners\TaskReportCacheCleaner::class,
+    ],
 
     /*
     |--------------------------------------------------------------------------
