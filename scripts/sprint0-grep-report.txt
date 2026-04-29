@@ -1,0 +1,19 @@
+Sprint 0 Task 0.1 — spec consistency grep report
+[CUSTOM:report-channel]
+
+Spec file: D:/workspace/agent-weknora/docs/plans/2026-04-25-task-report-channel-design.md (342.8K)
+Date: 2026-04-29
+
+Scan 1 (URLs missing project/ prefix):
+  pattern: url:\s*['"](?!project/)(report_field|report_dashboard|report/|report_template|trigger_log)
+  hits: 0  -> PASS
+
+Scan 2 (uppercase permission constants):
+  pattern: perms\.includes\(['"][A-Z_]+['"]\)
+  hits: 0  -> PASS
+
+Scan 3 (legacy frequency_limit name not renamed to frequency_limit_min):
+  pattern: frequency_limit($|[^_])
+  hits: 0  -> PASS
+
+Result: ALL PASS — spec is internally consistent. Proceed to Task 0.2 / 0.3.
