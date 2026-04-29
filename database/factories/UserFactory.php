@@ -1,5 +1,10 @@
 <?php
 
+// [CUSTOM:report-channel]
+// Pre_users 自定义 schema（无 name/email_verified_at/remember_token 列），
+// 与 Laravel 默认 UserFactory 不兼容。本 Factory 改用真实 schema 字段。
+// 参考：tests/Feature/WecomInternalTokenTest.php::makeUser() 已踩过的坑。
+
 namespace Database\Factories;
 
 use App\Models\User;
@@ -18,30 +23,27 @@ class UserFactory extends Factory
     /**
      * Define the model's default state.
      *
+     * 仅填 pre_users 真实存在的列（参 2021_06_25_182631_create_users_table.php）。
+     *
      * @return array
      */
     public function definition()
     {
         return [
-            'name' => $this->faker->name(),
-            'email' => $this->faker->unique()->safeEmail(),
-            'email_verified_at' => now(),
-            'password' => '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', // password
-            'remember_token' => Str::random(10),
+            'email'      => $this->faker->unique()->safeEmail(),
+            'nickname'   => $this->faker->name(),
+            'encrypt'    => Str::random(16),
+            'password'   => 'test-password',  // string(50)，测试不走登录路径
+            'identity'   => '',
+            'disable_at' => null,
         ];
     }
 
     /**
-     * Indicate that the model's email address should be unverified.
-     *
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * 已禁用账号
      */
-    public function unverified()
+    public function disabled()
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'email_verified_at' => null,
-            ];
-        });
+        return $this->state(fn () => ['disable_at' => now()]);
     }
 }
