@@ -36,6 +36,16 @@ class RequestContext
 
     /**
      * 获取当前请求ID
+     *
+     * [CUSTOM:report-channel] Sprint 1 Pass 3 fix:
+     *   原 `method_exists($request, 'attributes')` 永远返 false，
+     *   因为 Symfony Request 的 `attributes` 是 public 属性而非方法。
+     *   这导致每次调 set/has/get 都 fallthrough 到 generateRequestId，
+     *   ClientContext 各 set 散落不同 bucket，"缓存"语义形同虚设
+     *   （包括 User::authInfo 的 auth 缓存短路）。
+     *   改用 property_exists 让 per-request 缓存按设计工作，
+     *   同时让 Sprint 1 Pass 3 controller feature 测试可通过 RequestContext::save
+     *   prime auth user，跳过 Doo Swoole FFI 依赖。
      */
     public static function getCurrentRequestId($requestId = null): ?string
     {
@@ -44,9 +54,9 @@ class RequestContext
             return $requestId;
         }
 
-        // 尝试从当前请求获取
+        // 尝试从当前请求获取（attributes 是 public 属性，故用 property_exists 而非 method_exists）
         $request = request();
-        if ($request && method_exists($request, 'attributes') && $request->attributes) {
+        if ($request && property_exists($request, 'attributes') && $request->attributes) {
             if (!$request->attributes->has(static::CONTEXT_KEY)) {
                 $request->attributes->set(static::CONTEXT_KEY, self::generateRequestId());
             }
