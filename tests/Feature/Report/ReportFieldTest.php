@@ -29,12 +29,22 @@ class ReportFieldTest extends TestCase
     }
 
     /**
+     * 钉死 request_id，prime auth bucket，clear input 避免 case 间残留
+     */
+    private function primeAuth(User $user): void
+    {
+        $rid = 'req_test_' . uniqid();
+        request()->attributes->set('request_id', $rid);
+        RequestContext::save('auth', $user, $rid);
+    }
+
+    /**
      * 调 report_field__save 的统一帮手
      */
     private function callFieldSave(User $user, array $input): array
     {
-        RequestContext::save('auth', $user);
-        request()->merge($input);
+        $this->primeAuth($user);
+        request()->replace($input);
         $controller = new ProjectController();
         $resp = $controller->report_field__save();
         return json_decode($resp->getContent(), true);
@@ -45,8 +55,8 @@ class ReportFieldTest extends TestCase
      */
     private function callFieldDelete(User $user, array $input): array
     {
-        RequestContext::save('auth', $user);
-        request()->merge($input);
+        $this->primeAuth($user);
+        request()->replace($input);
         $controller = new ProjectController();
         $resp = $controller->report_field__delete();
         return json_decode($resp->getContent(), true);

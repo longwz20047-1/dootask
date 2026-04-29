@@ -56,14 +56,19 @@ class ReportSaveTest extends TestCase
 
     /**
      * 调 controller 方法的统一帮手：
-     *   1. RequestContext::save('auth', $user) 让 User::auth() 返我们的 user
-     *   2. Request::merge([...]) 注入入参
-     *   3. 直接 new + 调方法（与 dootask Service 测试同范式）
+     *   1. 强绑 request 的 request_id（防 RequestContext 在不同调用点 request() 返不同实例时 id 漂移）
+     *   2. RequestContext::save('auth', $user) 让 User::auth() 返我们的 user
+     *   3. Request::merge([...]) 注入入参
+     *   4. 直接 new + 调方法（与 dootask Service 测试同范式）
      */
     private function callReportSave(User $user, array $input): array
     {
-        RequestContext::save('auth', $user);
-        request()->merge($input);
+        // 显式钉死 request_id，确保 save / has / get 三步走同一 ClientContext bucket
+        $rid = 'req_test_' . uniqid();
+        request()->attributes->set('request_id', $rid);
+        RequestContext::save('auth', $user, $rid);
+        // 用 replace 而非 merge，避免不同 case 间 input 累积串
+        request()->replace($input);
         $controller = new ProjectController();
         $resp = $controller->report__save();
         // Base::retSuccess / retError 返 JsonResponse；解 array 便于断言
