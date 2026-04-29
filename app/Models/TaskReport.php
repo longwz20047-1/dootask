@@ -61,14 +61,18 @@ class TaskReport extends AbstractModel
     /**
      * Scope: 包含本任务和子任务（parent_id = $taskId）的 reports
      *
-     * 用法：TaskReport::forTaskAndChildren($parentTaskId)->get()
+     * 用法：
+     *   TaskReport::forTaskAndChildren($parentTaskId)->get()      // int 入参
+     *   TaskReport::forTaskAndChildren($projectTaskInstance)->get() // ProjectTask 入参
      *
-     * 注：spec §3.5 line 1303 签名为 (Builder $q, ProjectTask $task)，本 Pass 2
-     * 收窄为 int $taskId 以避免提前依赖 ProjectTask 实例化语义；Sprint 3 List
-     * 路径如需 ProjectTask 入参再补 overload。
+     * R-3 fix: 接受 ProjectTask|int 与 spec §3.5 line 1303 签名 `(ProjectTask $task)` 兼容，
+     * 避免 Sprint 3 List 路径接入时再改签名（PHP 无方法重载）。
+     *
+     * @param  \App\Models\ProjectTask|int  $task
      */
-    public function scopeForTaskAndChildren(Builder $query, int $taskId): Builder
+    public function scopeForTaskAndChildren(Builder $query, $task): Builder
     {
+        $taskId = $task instanceof \App\Models\ProjectTask ? $task->id : (int) $task;
         return $query->where(function (Builder $q) use ($taskId) {
             $q->where('task_id', $taskId)
               ->orWhere('parent_id', $taskId);

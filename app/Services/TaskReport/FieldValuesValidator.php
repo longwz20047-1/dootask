@@ -51,7 +51,9 @@ class FieldValuesValidator
             if ($hasUserField) {
                 $project = Project::find($projectId);
                 if ($project) {
-                    $projectUserids = $project->relationUserids()->toArray();
+                    // I-1 fix: relationUserids() already returns array (Project.php:254
+                    // calls ->pluck()->toArray()). Calling ->toArray() on array fatals.
+                    $projectUserids = $project->relationUserids();
                 }
             }
         }
@@ -61,7 +63,10 @@ class FieldValuesValidator
             $value = $values[$code] ?? null;
 
             // required 校验
-            if (!empty($field['required']) && ($value === null || $value === '')) {
+            // R-2 fix: also treat empty arrays as missing for multi_select/user/attachment.
+            if (!empty($field['required']) && (
+                $value === null || $value === '' || (is_array($value) && empty($value))
+            )) {
                 $errors[] = [
                     'code'   => $code,
                     'kind'   => 'missing',

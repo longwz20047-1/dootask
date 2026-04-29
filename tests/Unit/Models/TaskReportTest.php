@@ -82,6 +82,26 @@ class TaskReportTest extends TestCase
         $this->assertCount(2, $reports);
     }
 
+    /**
+     * R-3 fix: scopeForTaskAndChildren 同时接受 ProjectTask 实例（spec §3.5 line 1303 签名）。
+     * Sprint 3 List 路径接入时直接传 ProjectTask 实例，避免重 review 改签名。
+     */
+    public function test_scope_for_task_and_children_accepts_project_task_instance()
+    {
+        $parent = ProjectTask::factory()->create();
+        $child  = ProjectTask::factory()->create([
+            'parent_id'  => $parent->id,
+            'project_id' => $parent->project_id,
+        ]);
+
+        $this->createReport(['task_id' => $parent->id]);
+        $this->createReport(['task_id' => $child->id, 'parent_id' => $parent->id]);
+
+        // 入参为 ProjectTask 实例（非 int），应等价于 ->forTaskAndChildren($parent->id)
+        $reports = TaskReport::forTaskAndChildren($parent)->get();
+        $this->assertCount(2, $reports);
+    }
+
     public function test_soft_delete_marks_deleted_at()
     {
         $report = $this->createReport();

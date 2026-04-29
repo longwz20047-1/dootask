@@ -15,11 +15,19 @@
 
 namespace Tests\Unit\Services\TaskReport;
 
+use App\Models\Project;
+use App\Models\ProjectUser;
+use App\Models\User;
 use App\Services\TaskReport\FieldValuesValidator;
+use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Tests\TestCase;
 
 class FieldValuesValidatorTest extends TestCase
 {
+    // user-type 测试需要项目成员表 + User 表，且必须每 test BEGIN/ROLLBACK
+    // 防 pre_users / pre_project_users 残留；其它纯 PHP 校验测试无副作用。
+    use DatabaseTransactions;
+
     private FieldValuesValidator $validator;
 
     protected function setUp(): void
@@ -228,5 +236,72 @@ class FieldValuesValidatorTest extends TestCase
         $this->assertEmpty($unknownErrs);
         // deprecated 含 orphan
         $this->assertEquals(['orphan' => 'old-value'], $result['deprecated']);
+    }
+
+    /**
+     * R-2 fix: required 校验对空数组 ([]) 也要触发 missing。
+     * multi_select / user / attachment 等数组类型 required:true + value:[] 必须报错。
+     */
+    public function test_required_multi_select_empty_array_triggers_error()
+    {
+        $defs = [[
+            'code'     => 'tags',
+            'name'     => '标签',
+            'type'     => 'multi_select',
+            'required' => true,
+            'options'  => [['value' => 'a', 'label' => 'A']],
+        ]];
+        $result = $this->validator->validate(['tags' => []], $defs, 0, 0, 'save');
+
+        $this->assertNotEmpty($result['errors']);
+        $missing = array_filter($result['errors'], fn ($e) => ($e['kind'] ?? null) === 'missing');
+        $this->assertCount(1, $missing);
+        $this->assertEquals('tags', array_values($missing)[0]['code']);
+    }
+
+    /**
+     * I-1 fix regression test: ensure user-type branch does not crash on
+     * Project::relationUserids() return-type ambiguity (line 54 used to call
+     * ->toArray() on the already-array result and PHP-fataled).
+     *
+     * 同时校验项目成员交集逻辑：outsider（非项目成员）应被剔除。
+     */
+    public function test_user_type_filters_non_project_members()
+    {
+        // 项目负责人
+        $owner    = User::factory()->create();
+        $project  = Project::factory()->create(['userid' => $owner->userid]);
+
+        // 加 owner 进入 pre_project_users（dootask 项目成员表）
+        ProjectUser::create([
+            'project_id' => $project->id,
+            'userid'     => $owner->userid,
+            'owner'      => 1,
+        ]);
+
+        // 非项目成员
+        $outsider = User::factory()->create();
+
+        $defs = [[
+            'code'     => 'assignee',
+            'name'     => '负责人',
+            'type'     => 'user',
+            'required' => false,
+            'options'  => [],
+        ]];
+
+        $result = $this->validator->validate(
+            ['assignee' => [$owner->userid, $outsider->userid]],
+            $defs,
+            0,
+            $project->id,
+            'save'
+        );
+
+        // outsider 不在 pre_project_users → sanitized 应过滤掉；只保留 owner
+        $this->assertEquals([$owner->userid], $result['sanitized']['assignee']);
+        // 同时报 invalid（含项目外用户）
+        $invalidErrs = array_filter($result['errors'], fn ($e) => ($e['kind'] ?? null) === 'invalid');
+        $this->assertNotEmpty($invalidErrs);
     }
 }
