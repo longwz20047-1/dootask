@@ -273,11 +273,13 @@ class FieldValuesValidatorTest extends TestCase
         $project  = Project::factory()->create(['userid' => $owner->userid]);
 
         // 加 owner 进入 pre_project_users（dootask 项目成员表）
-        ProjectUser::create([
+        // ProjectUser 继承 AbstractModel 且无 $fillable → 必须用 createInstance
+        // （dootask CLAUDE.md 约定，绕开 mass-assignment 限制）
+        ProjectUser::createInstance([
             'project_id' => $project->id,
             'userid'     => $owner->userid,
             'owner'      => 1,
-        ]);
+        ])->save();
 
         // 非项目成员
         $outsider = User::factory()->create();
