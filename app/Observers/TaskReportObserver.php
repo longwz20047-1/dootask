@@ -21,7 +21,10 @@ class TaskReportObserver
      */
     public function deleting(ProjectTask $task): void
     {
-        TaskReport::where('task_id', $task->id)->each(function (TaskReport $report) {
+        // forTaskAndChildren 包含本任务 + 子任务（spec §6.2.1 inherit v2.6 §9.2）
+        // 必须用此 scope 兜底，因 dootask ProjectTask::deleteTask() 对子任务用 whereParentId->remove()
+        // 批量软删无单条 event，靠父任务删的 forTaskAndChildren 级联抓子任务的 reports
+        TaskReport::forTaskAndChildren($task)->each(function (TaskReport $report) {
             $report->cascade_deleted = true;
             $report->save();
             $report->delete();
@@ -35,7 +38,7 @@ class TaskReportObserver
     public function restored(ProjectTask $task): void
     {
         TaskReport::onlyTrashed()
-            ->where('task_id', $task->id)
+            ->forTaskAndChildren($task)
             ->where('cascade_deleted', true)
             ->each(function (TaskReport $report) {
                 $report->restore();

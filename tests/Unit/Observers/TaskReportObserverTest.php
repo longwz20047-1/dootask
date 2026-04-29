@@ -95,4 +95,72 @@ class TaskReportObserverTest extends TestCase
 
         $this->assertEquals($newProject->id, (int) $report->fresh()->project_id);
     }
+
+    /**
+     * spec §6.2.1 inherit v2.6 §9.2: 父任务软删时，子任务的 reports 也必须级联。
+     * dootask ProjectTask::deleteTask() 对子任务批量软删无 event，
+     * 只能靠父任务的 deleting hook + forTaskAndChildren scope 兜底。
+     */
+    public function test_subtask_reports_cascade_when_parent_task_deleted()
+    {
+        $project = Project::factory()->create();
+        $parent = ProjectTask::factory()->create(['project_id' => $project->id]);
+        $child = ProjectTask::factory()->create([
+            'parent_id'  => $parent->id,
+            'project_id' => $project->id,
+        ]);
+
+        $parentReport = TaskReport::factory()->create([
+            'task_id'         => $parent->id,
+            'parent_id'       => 0,
+            'project_id'      => $project->id,
+            'cascade_deleted' => false,
+        ]);
+
+        $childReport = TaskReport::factory()->create([
+            'task_id'         => $child->id,
+            'parent_id'       => $parent->id,
+            'project_id'      => $project->id,
+            'cascade_deleted' => false,
+        ]);
+
+        // 删父任务
+        $parent->delete();
+
+        // 父 report 级联软删（既有行为）
+        $this->assertSoftDeleted('project_task_reports', ['id' => $parentReport->id]);
+        $this->assertTrue((bool) TaskReport::withTrashed()->find($parentReport->id)->cascade_deleted);
+
+        // 子 report 也必须级联软删（本 fix 验证项）
+        $this->assertSoftDeleted('project_task_reports', ['id' => $childReport->id]);
+        $this->assertTrue((bool) TaskReport::withTrashed()->find($childReport->id)->cascade_deleted);
+    }
+
+    /**
+     * 父任务恢复 → 子任务的 cascade_deleted=true reports 也恢复。
+     */
+    public function test_subtask_reports_restored_when_parent_task_restored()
+    {
+        $project = Project::factory()->create();
+        $parent = ProjectTask::factory()->create(['project_id' => $project->id]);
+        $child = ProjectTask::factory()->create([
+            'parent_id'  => $parent->id,
+            'project_id' => $project->id,
+        ]);
+
+        $childReport = TaskReport::factory()->create([
+            'task_id'         => $child->id,
+            'parent_id'       => $parent->id,
+            'project_id'      => $project->id,
+            'cascade_deleted' => false,
+        ]);
+
+        $parent->delete();
+        $this->assertSoftDeleted('project_task_reports', ['id' => $childReport->id]);
+
+        $parent->restore();
+
+        $this->assertNotSoftDeleted('project_task_reports', ['id' => $childReport->id]);
+        $this->assertFalse((bool) TaskReport::find($childReport->id)->cascade_deleted);
+    }
 }
