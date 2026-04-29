@@ -48,6 +48,10 @@ use App\Models\ProjectTaskRelation;
 use App\Models\ProjectTaskAiEvent;
 use App\Module\AiTaskSuggestion;
 use App\Observers\ProjectTaskObserver;
+// [CUSTOM:report-channel] Sprint 1 Pass 3
+use App\Models\TaskReport;
+use App\Services\TaskReport\FieldDefinitionCache;
+use App\Services\TaskReport\FieldValuesValidator;
 
 /**
  * @apiDefine project
@@ -4050,4 +4054,94 @@ class ProjectController extends AbstractController
             'msg' => $msgResult['data'] ?? null,
         ]);
     }
+
+    // ======================================================================
+    // [CUSTOM:report-channel] Sprint 1 Pass 3：上报通道（report__save / report_field__save / report_field__delete）
+    // 说明：spec §5.1 列了 14 个 report* 端点；本 Pass 仅交付 3 个最小集，
+    //      其余在后续 Sprint 内续接。
+    // ======================================================================
+
+    /**
+     * @api {post} api/project/report/save 02. 上报新建/编辑
+     *
+     * @apiDescription 需要token身份；项目成员可自由上报本人记录
+     * @apiVersion 1.0.0
+     * @apiGroup project
+     * @apiName report__save
+     *
+     * @apiParam {Number} task_id              任务 ID
+     * @apiParam {Object} values               字段值 JSON（结构由 task_field_definitions 定义）
+     * @apiParam {String} [work_date]          归属日期 yyyy-mm-dd（默认今日）
+     * @apiParam {Number} [report_id]          编辑场景：报告 ID
+     *
+     * @apiSuccess {Number} ret     返回状态码（1正确、0错误）
+     * @apiSuccess {String} msg     返回信息（错误描述）
+     * @apiSuccess {Object} data    返回数据
+     */
+    public function report__save()
+    {
+        $user = User::auth();
+        //
+        $taskId = intval(Request::input('task_id'));
+        $reportId = intval(Request::input('report_id', 0));
+        $values = Request::input('values', []);
+        $workDate = trim((string) Request::input('work_date', '')) ?: date('Y-m-d');
+        //
+        if ($taskId <= 0) {
+            return Base::retError('参数错误（task_id）');
+        }
+        if (!is_array($values)) {
+            return Base::retError('values 必须是 JSON 对象');
+        }
+        // 1. 任务存在 + 未归档（archived_at 与 SoftDeletes 的 deleted_at 不同，需手动判定）
+        $task = ProjectTask::whereId($taskId)->whereNull('archived_at')->first();
+        if (!$task) {
+            return Base::retError('任务不存在或已归档');
+        }
+        // 2. 项目权限：调用方必须是项目成员（含负责人）
+        $project = Project::find($task->project_id);
+        if (!$project) {
+            return Base::retError('项目不存在');
+        }
+        $memberIds = ProjectUser::whereProjectId($project->id)->pluck('userid')->toArray();
+        if (!in_array((int) $user->userid, array_map('intval', $memberIds), true)) {
+            return Base::retError('您不是该项目成员');
+        }
+        // 3. 加载 enabled 字段定义（global + project 双 scope 合并）
+        $globalDefs = FieldDefinitionCache::get('global', 0);
+        $projectDefs = FieldDefinitionCache::get('project', (int) $task->project_id);
+        $defs = array_merge($globalDefs->toArray(), $projectDefs->toArray());
+        // 4. 调 FieldValuesValidator 校验
+        $validator = app(FieldValuesValidator::class);
+        $result = $validator->validate($values, $defs, $reportId, (int) $task->project_id, 'save');
+        if (!empty($result['errors'])) {
+            return Base::retError('字段校验失败：' . ($result['errors'][0]['reason'] ?? '未知错误'));
+        }
+        // 5. 写入 / 更新 report
+        if ($reportId > 0) {
+            $report = TaskReport::whereId($reportId)
+                ->where('task_id', $task->id)
+                ->where('reporter_userid', $user->userid)
+                ->first();
+            if (!$report) {
+                return Base::retError('报告不存在或无权编辑');
+            }
+            $report->values = $result['sanitized'];
+            $report->work_date = $workDate;
+            $report->save();
+        } else {
+            $report = TaskReport::createInstance([
+                'task_id'         => $task->id,
+                'parent_id'       => (int) ($task->parent_id ?? 0),
+                'project_id'      => (int) $task->project_id,
+                'reporter_userid' => (int) $user->userid,
+                'work_date'       => $workDate,
+                'values'          => $result['sanitized'],
+                'cascade_deleted' => false,
+            ]);
+            $report->save();
+        }
+        return Base::retSuccess('保存成功', ['report' => $report->toArray()]);
+    }
+
 }
