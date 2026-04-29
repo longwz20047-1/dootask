@@ -50,6 +50,7 @@ use App\Module\AiTaskSuggestion;
 use App\Observers\ProjectTaskObserver;
 // [CUSTOM:report-channel] Sprint 1 Pass 3
 use App\Models\TaskReport;
+use App\Models\TaskFieldDefinition;
 use App\Services\TaskReport\FieldDefinitionCache;
 use App\Services\TaskReport\FieldValuesValidator;
 
@@ -4142,6 +4143,160 @@ class ProjectController extends AbstractController
             $report->save();
         }
         return Base::retSuccess('保存成功', ['report' => $report->toArray()]);
+    }
+
+    /**
+     * @api {post} api/project/report_field/save 03. 上报字段定义新建/编辑
+     *
+     * @apiDescription 需要token身份；scope=global 仅管理员；scope=project 须项目负责人
+     * @apiVersion 1.0.0
+     * @apiGroup project
+     * @apiName report_field__save
+     *
+     * @apiParam {Number} [id]            字段 ID（编辑场景）
+     * @apiParam {String} scope           global / project
+     * @apiParam {Number} [project_id]    scope=project 时必填
+     * @apiParam {String} code            字段标识符（新建必填）
+     * @apiParam {String} name            字段名称
+     * @apiParam {String} type            text/textarea/number/date/select/multi_select/attachment/json/user
+     * @apiParam {Object} [options]       类型相关配置
+     * @apiParam {Boolean} [required]
+     * @apiParam {Number} [sort]
+     * @apiParam {Boolean} [enabled]
+     *
+     * @apiSuccess {Number} ret     返回状态码（1正确、0错误）
+     * @apiSuccess {String} msg     返回信息（错误描述）
+     * @apiSuccess {Object} data    返回数据
+     *
+     * [CUSTOM:report-channel] Sprint 1 Pass 3 · Task 1.8
+     */
+    public function report_field__save()
+    {
+        $user = User::auth();
+        //
+        $id = intval(Request::input('id', 0));
+        $scope = trim((string) Request::input('scope', 'global'));
+        $projectId = intval(Request::input('project_id', 0));
+        $code = trim((string) Request::input('code', ''));
+        $name = trim((string) Request::input('name', ''));
+        $type = trim((string) Request::input('type', ''));
+        $options = Request::input('options', []);
+        $required = (bool) Request::input('required', false);
+        $sort = intval(Request::input('sort', 0));
+        $enabled = (bool) Request::input('enabled', true);
+        //
+        if (!in_array($scope, ['global', 'project'], true)) {
+            return Base::retError('scope 非法（仅支持 global/project）');
+        }
+        // 权限校验
+        if ($scope === 'global' && !$user->isAdmin()) {
+            return Base::retError('global scope 仅管理员可改');
+        }
+        if ($scope === 'project') {
+            if ($projectId <= 0) {
+                return Base::retError('project scope 必须传 project_id');
+            }
+            // 借用 Project::userProject(mustOwner=true) 校验项目负责人
+            Project::userProject($projectId, true, true);
+        }
+        // id 编辑场景：内建字段拒改核心属性
+        if ($id > 0) {
+            $field = TaskFieldDefinition::find($id);
+            if (!$field) {
+                return Base::retError('字段不存在');
+            }
+            if ($field->is_builtin) {
+                return Base::retError('内建字段不允许编辑核心属性');
+            }
+            if ($name === '') {
+                return Base::retError('name 必填');
+            }
+            // 编辑：保留 code/type/scope，仅更新可改属性（避免破坏 uniq_scope_project_code 唯一索引语义）
+            $field->fill([
+                'name'     => $name,
+                'options'  => is_array($options) ? $options : [],
+                'required' => $required,
+                'sort'     => $sort,
+                'enabled'  => $enabled,
+            ])->save();
+        } else {
+            // 新建必填 + type 白名单
+            if ($code === '') {
+                return Base::retError('code 必填');
+            }
+            if ($name === '') {
+                return Base::retError('name 必填');
+            }
+            $allowedTypes = ['text', 'textarea', 'number', 'date', 'select', 'multi_select', 'attachment', 'json', 'user'];
+            if (!in_array($type, $allowedTypes, true)) {
+                return Base::retError('type 非法');
+            }
+            $field = TaskFieldDefinition::createInstance([
+                'scope'              => $scope,
+                'project_id'         => $scope === 'project' ? $projectId : 0,
+                'flow_item_id'       => 0,
+                'code'               => $code,
+                'name'               => $name,
+                'type'               => $type,
+                'options'            => is_array($options) ? $options : [],
+                'default_value'      => null,
+                'required'           => $required,
+                'sort'               => $sort,
+                'enabled'            => $enabled,
+                'is_builtin'         => false,
+                'aggregatable'       => false,
+                'aggregate_strategy' => 'none',
+                'has_index'          => false,
+            ]);
+            $field->save();
+        }
+        // flush per-request 缓存（LaravelS Cleaner 跨请求；同请求需手动）
+        FieldDefinitionCache::flushAll();
+        return Base::retSuccess('保存成功', ['field' => $field->toArray()]);
+    }
+
+    /**
+     * @api {post} api/project/report_field/delete 04. 上报字段定义删除
+     *
+     * @apiDescription 需要token身份；scope=global 仅管理员；scope=project 须项目负责人；is_builtin=true 拒删
+     * @apiVersion 1.0.0
+     * @apiGroup project
+     * @apiName report_field__delete
+     *
+     * @apiParam {Number} id            字段 ID
+     *
+     * @apiSuccess {Number} ret     返回状态码（1正确、0错误）
+     * @apiSuccess {String} msg     返回信息（错误描述）
+     * @apiSuccess {Object} data    返回数据
+     *
+     * [CUSTOM:report-channel] Sprint 1 Pass 3 · Task 1.8
+     */
+    public function report_field__delete()
+    {
+        $user = User::auth();
+        //
+        $id = intval(Request::input('id'));
+        if ($id <= 0) {
+            return Base::retError('id 必填');
+        }
+        $field = TaskFieldDefinition::find($id);
+        if (!$field) {
+            return Base::retError('字段不存在');
+        }
+        // 拒删内建字段（hours/note）
+        if ($field->is_builtin) {
+            return Base::retError('内建字段不允许删除');
+        }
+        // 权限校验
+        if ($field->scope === 'global' && !$user->isAdmin()) {
+            return Base::retError('global scope 仅管理员可删');
+        }
+        if ($field->scope === 'project') {
+            Project::userProject((int) $field->project_id, true, true);
+        }
+        $field->delete();
+        FieldDefinitionCache::flushAll();
+        return Base::retSuccess('删除成功');
     }
 
 }
