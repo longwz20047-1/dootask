@@ -4119,6 +4119,7 @@ class ProjectController extends AbstractController
             return Base::retError('字段校验失败：' . ($result['errors'][0]['reason'] ?? '未知错误'));
         }
         // 5. 写入 / 更新 report
+        $isUpdate = false;
         if ($reportId > 0) {
             $report = TaskReport::whereId($reportId)
                 ->where('task_id', $task->id)
@@ -4130,6 +4131,7 @@ class ProjectController extends AbstractController
             $report->values = $result['sanitized'];
             $report->work_date = $workDate;
             $report->save();
+            $isUpdate = true;
         } else {
             $report = TaskReport::createInstance([
                 'task_id'         => $task->id,
@@ -4142,6 +4144,26 @@ class ProjectController extends AbstractController
             ]);
             $report->save();
         }
+        // 6. 写审计（spec §8 审计：复用 dootask 既有 ProjectLog 体系，detail 模板见 spec line 2475）
+        // 字段拼接示例：`提交{任务}上报 hours=2.5h difficulty=hard`
+        $fieldParts = [];
+        foreach ($result['sanitized'] as $code => $val) {
+            if (is_array($val)) {
+                $val = json_encode($val, JSON_UNESCAPED_UNICODE);
+            } elseif (is_bool($val)) {
+                $val = $val ? 'true' : 'false';
+            }
+            $fieldParts[] = $code . '=' . $val;
+        }
+        $detail = ($isUpdate ? '更新' : '提交') . '{任务}上报';
+        if ($fieldParts) {
+            $detail .= ' ' . implode(' ', $fieldParts);
+        }
+        $task->addLog($detail, [
+            'report_id' => (int) $report->id,
+            'work_date' => $workDate,
+            'values'    => $result['sanitized'],
+        ]);
         return Base::retSuccess('保存成功', ['report' => $report->toArray()]);
     }
 
