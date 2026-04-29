@@ -41,6 +41,23 @@ class TaskReport extends AbstractModel
     ];
 
     /**
+     * NF3 离职快照：reporter_userid 一旦写入即为快照，不允许再被改写。
+     * 即便上报人后续离职/被改名/被软删，本字段仍保留原 userid，保证审计可追溯。
+     *
+     * 实现策略：在 updating 阶段 silent revert，避免业务代码无意改写。
+     */
+    protected static function boot()
+    {
+        parent::boot();
+
+        static::updating(function (self $report) {
+            if ($report->isDirty('reporter_userid')) {
+                $report->reporter_userid = $report->getOriginal('reporter_userid');
+            }
+        });
+    }
+
+    /**
      * 关联：上报人（User，pre_users.userid 主键）
      */
     public function reporter()
