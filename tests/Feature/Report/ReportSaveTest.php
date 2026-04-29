@@ -70,9 +70,8 @@ class ReportSaveTest extends TestCase
         // 用 replace 而非 merge，避免不同 case 间 input 累积串
         request()->replace($input);
         $controller = new ProjectController();
-        $resp = $controller->report__save();
-        // Base::retSuccess / retError 返 JsonResponse；解 array 便于断言
-        return json_decode($resp->getContent(), true);
+        // Base::retSuccess / retError 直接返 array {ret, msg, data}
+        return $controller->report__save();
     }
 
     public function test_save_creates_new_report(): void

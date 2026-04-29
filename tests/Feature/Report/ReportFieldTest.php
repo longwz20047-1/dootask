@@ -46,8 +46,7 @@ class ReportFieldTest extends TestCase
         $this->primeAuth($user);
         request()->replace($input);
         $controller = new ProjectController();
-        $resp = $controller->report_field__save();
-        return json_decode($resp->getContent(), true);
+        return $controller->report_field__save();
     }
 
     /**
@@ -58,8 +57,7 @@ class ReportFieldTest extends TestCase
         $this->primeAuth($user);
         request()->replace($input);
         $controller = new ProjectController();
-        $resp = $controller->report_field__delete();
-        return json_decode($resp->getContent(), true);
+        return $controller->report_field__delete();
     }
 
     private function makeAdmin(): User
