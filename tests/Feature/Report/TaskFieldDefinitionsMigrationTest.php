@@ -39,7 +39,8 @@ class TaskFieldDefinitionsMigrationTest extends TestCase
         $this->assertTrue((bool) $hours->required);
         $this->assertTrue((bool) $hours->aggregatable);
         $this->assertEquals('sum', $hours->aggregate_strategy);
-        $this->assertTrue((bool) $hours->has_index);
+        // v1.12 Sprint 1 Pass 1 M5 fix: has_index is false until §22 IndexBuilder completes async ALTER
+        $this->assertFalse((bool) $hours->has_index);
     }
 
     public function test_seed_note_field()
