@@ -45,9 +45,15 @@ class Sprint7APass2Test extends TestCase
 
     /**
      * StatisticsService::aggregate sum_hours 走 hours_v 虚拟列（has_index=true 路径）→ 无 warning
+     *
+     * 注：legacy 库的 hours 行可能 has_index=0（migration seed 后扩列默认值漂移）。
+     * 本测试在 DatabaseTransactions 内显式置 has_index=true，rollback 自动还原。
      */
     public function test_aggregate_sum_hours_uses_indexed_path_without_warning()
     {
+        // 强制 hours.has_index=true（覆盖 legacy 库的漂移）
+        DB::table('task_field_definitions')->where('code', 'hours')->update(['has_index' => true]);
+
         // 先放点数据（避免空 GROUP BY 失败）
         $this->insertReport(['hours' => 2.5, 'note' => 'a'], 1001, 9001, 7777);
 
@@ -58,7 +64,7 @@ class Sprint7APass2Test extends TestCase
             'filters'    => ['user_ids' => [1001]],
         ]);
 
-        // hours.has_index=true 由 seed 保证 → 不应有 warning
+        // hours.has_index=true → 不应有 warning（走 hours_v 索引路径）
         $this->assertNull($result['warning']);
         // 应能跑通且返回 1 行
         $this->assertCount(1, $result['rows']);
@@ -210,14 +216,19 @@ class Sprint7APass2Test extends TestCase
 
     /**
      * IndexBuilder::enable idempotent：has_index=true 时静默跳过（不抛异常）
+     *
+     * 注：legacy 库的 hours 行可能 has_index=0（migration seed 后扩列默认值漂移），
+     * 故本测试显式置 has_index=true 验证 idempotent 跳过路径。
      */
     public function test_enable_idempotent_when_already_indexed()
     {
         $hours = TaskFieldDefinition::where('code', 'hours')->first();
         $this->assertNotNull($hours, 'builtin hours seed missing');
-        $this->assertTrue((bool) $hours->has_index, 'builtin hours.has_index should be true');
 
-        // 不抛 / 不 dispatch（taskDeliver 在无 swoole 时本来就 no-op，但 has_index=true 提前 return）
+        // 强制设置 has_index=true（DatabaseTransactions 自动 rollback）
+        DB::table('task_field_definitions')->where('id', $hours->id)->update(['has_index' => true]);
+
+        // 不抛 / 不 dispatch（has_index=true 提前 return）
         IndexBuilder::enable($hours->id);
         $this->assertTrue(true);
     }
