@@ -340,6 +340,19 @@ export default {
                     return
                 }
 
+                // [CUSTOM:report-channel] block 模式拦截：err.data.template_block 非空时 emit 给 ReportDialog
+                // payload 含 fields (override) / _retryAction (重发当前 dispatch) / _hint (提示用户)
+                // 仅触发 emit + 短路既有 -4001 forgetProject 分支（template_block 复用 -4001 业务码但非 project not found）
+                // reject 仍然执行（业务组件可自查 err.data.template_block 自行 return；未自查的组件 Message.error 与 Dialog 并存）
+                if ($A.isJson(data) && data.template_block) {
+                    emitter.emit('reportTriggerModal', Object.assign({}, data.template_block, {
+                        _retryAction: () => dispatch('call', cloneParams),
+                        _hint: msg || (data.template_block && data.template_block._hint),
+                    }))
+                    reject({ret, data, msg: msg || $A.L('未知错误')})
+                    return
+                }
+
                 // 错误处理
                 reject({ret, data, msg: msg || $A.L('未知错误')})
                 if (ret === -4001) {
@@ -4825,9 +4838,13 @@ export default {
                          * 工作报告
                          */
                         case "report":
-                            (function ({action}) {
+                            (function ({action, ...rest}) {
                                 if (action == 'unreadUpdate') {
                                     dispatch("getReportUnread", 1000)
+                                } else if (action == 'reportTriggerModal') {
+                                    // [CUSTOM:report-channel] block 模式 server 推 ws msg → emit 给 ReportDialog
+                                    // payload 含 task / fields / _hint / _retryAction（design §21.4 trigger）
+                                    emitter.emit('reportTriggerModal', rest)
                                 }
                             })(msgDetail);
                             break;
