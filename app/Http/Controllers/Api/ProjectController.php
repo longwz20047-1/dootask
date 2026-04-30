@@ -4145,19 +4145,11 @@ class ProjectController extends AbstractController
             $report->save();
         }
         // 6. 写审计（spec §8 审计：复用 dootask 既有 ProjectLog 体系，detail 模板见 spec line 2475）
-        // 字段拼接示例：`提交{任务}上报 hours=2.5h difficulty=hard`
-        $fieldParts = [];
-        foreach ($result['sanitized'] as $code => $val) {
-            if (is_array($val)) {
-                $val = json_encode($val, JSON_UNESCAPED_UNICODE);
-            } elseif (is_bool($val)) {
-                $val = $val ? 'true' : 'false';
-            }
-            $fieldParts[] = $code . '=' . $val;
-        }
+        // detail 仅拼字段 key 列表（如 `提交{任务}上报 [hours,note]`），完整 values 走 record JSON
+        // 不拼 user values：textarea/text 用户原文可能 500 字+，违反 dootask addLog 静态模板约定
         $detail = ($isUpdate ? '更新' : '提交') . '{任务}上报';
-        if ($fieldParts) {
-            $detail .= ' ' . implode(' ', $fieldParts);
+        if (!empty($result['sanitized'])) {
+            $detail .= ' [' . implode(',', array_keys($result['sanitized'])) . ']';
         }
         $task->addLog($detail, [
             'report_id' => (int) $report->id,
