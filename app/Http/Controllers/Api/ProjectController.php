@@ -5166,4 +5166,56 @@ class ProjectController extends AbstractController
         }
     }
 
+    /**
+     * @api {post} /api/project/report/pending_list 15. 我的未汇报任务列表
+     *
+     * @apiVersion 1.0.0
+     * @apiGroup project
+     * @apiName report__pending_list
+     *
+     * @apiParam {Number} [userid]            默认 me；admin 可查任意 userid
+     * @apiParam {Number} [project_id]        过滤项目（限项目成员可调）
+     * @apiParam {String} [date_from]         任务创建时间下限 yyyy-mm-dd（默认近 14 天）
+     * @apiParam {String} [date_to]           任务创建时间上限
+     * @apiParam {Boolean} [include_archived] 含归档任务（默认 false）
+     * @apiParam {Number} [limit]             默认 50，最大 100
+     *
+     * 权限：默认查自己的；admin 可查他人。指定 project_id 时校验项目成员。
+     *
+     * [CUSTOM:report-channel] Sprint 7-D Pass 1 Task 7-D.1
+     */
+    public function report__pending_list()
+    {
+        $user = User::auth();
+        $targetUserid = (int) (Request::input('userid') ?: $user->userid);
+
+        // 权限：仅 admin 可查他人未汇报任务
+        if ($targetUserid !== (int) $user->userid && !$user->isAdmin()) {
+            return Base::retError('仅管理员可查他人未汇报任务');
+        }
+
+        $projectId = intval(Request::input('project_id', 0)) ?: null;
+        $dateFrom = trim((string) Request::input('date_from', ''));
+        $dateTo = trim((string) Request::input('date_to', ''));
+        $includeArchived = (bool) Request::input('include_archived', false);
+        $limit = min(intval(Request::input('limit', 50)) ?: 50, 100);
+
+        // 项目存在校验（如指定）：当前调用者必须是项目成员
+        if ($projectId) {
+            Project::userProject($projectId);
+        }
+
+        $tasks = app(\App\Services\TaskReport\PendingReportService::class)
+            ->listForUser(
+                $targetUserid,
+                $projectId,
+                $limit,
+                $dateFrom !== '' ? $dateFrom : null,
+                $dateTo !== '' ? $dateTo : null,
+                $includeArchived
+            );
+
+        return Base::retSuccess('ok', $tasks->toArray());
+    }
+
 }
