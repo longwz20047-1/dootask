@@ -4861,4 +4861,309 @@ class ProjectController extends AbstractController
         return Base::retSuccess('ok', $logs->toArray());
     }
 
+    // ======================================================================
+    // [CUSTOM:report-channel] Sprint 7-B Pass 2 (Task 7.5 + 7.8.5)：仪表盘 6 端点 + build_index
+    // 设计：dashboard__data/drill 调 StatisticsService::aggregate（Sprint 7-A Task 7.3）；
+    //      dashboard__charts/save_chart/delete_chart Sprint 9 才落表 dashboard_charts，本 Pass 2 占位返空；
+    //      report_field__build_index 加 isAdmin 双闸（spec §13.3 v3.4 P1-2 修），controller 层兜底既有
+    //      §4.2 权限映射，DDL ALTER TABLE 锁表风险显式声明。
+    //
+    // 权限矩阵（Task 7.8 5 档）：
+    //   - TASK_REPORT_VIEW_OWN  → 任何登录用户（report_field/list scope=global）
+    //   - TASK_REPORT_SAVE      → 项目成员（report__save 已实施）
+    //   - TASK_REPORT_DELETE    → reporter 本人或项目负责人（report__save 编辑路径检查）
+    //   - TASK_REPORT_ADMIN_FIELDS    → admin/PM（report_field/save+delete 已实施）
+    //   - TASK_REPORT_ADMIN_TEMPLATES → admin/PM（report_template/save+delete Pass 1 实施）
+    //   - TASK_REPORT_ADMIN_DDL → admin only（本 Pass 2 build_index 双闸）
+    // ======================================================================
+
+    /**
+     * @api {post} api/project/report_dashboard/data 13. 仪表盘聚合数据查询
+     *
+     * @apiDescription 需要token身份；filters.project_ids 任一非项目成员抛错；不传 project_ids = 跨项目查
+     *                 仅管理员可调（spec §11.8）。调用 StatisticsService::aggregate（has_index 动态分流）。
+     * @apiVersion 1.0.0
+     * @apiGroup project
+     * @apiName report_dashboard__data
+     *
+     * @apiParam {String[]} dimensions       拆分维度（time/day, user, project, task, template）
+     * @apiParam {String}   metric           count / sum_<code> / avg_<code> / max_<code> / min_<code> / count_distinct_<code>
+     * @apiParam {Object}   [filters]        { user_ids?, project_ids?, task_ids?, template_ids?, date_range? }
+     * @apiParam {Object[]} [sort]           [{field: 'metric_value'|<col>, order: 'asc'|'desc'}]
+     * @apiParam {Number}   [top_n]          limit 行数
+     *
+     * @apiSuccess {Number} ret     返回状态码（1正确、0错误）
+     * @apiSuccess {String} msg     返回信息（错误描述）
+     * @apiSuccess {Object} data    {rows, warning}
+     *
+     * [CUSTOM:report-channel] Sprint 7-B Pass 2 · Task 7.5
+     */
+    public function report_dashboard__data()
+    {
+        $user = User::auth();
+        //
+        $params = [
+            'dimensions' => Request::input('dimensions', []),
+            'metric'     => trim((string) Request::input('metric', 'count')),
+            'filters'    => Request::input('filters', []),
+            'sort'       => Request::input('sort', []),
+            'top_n'      => intval(Request::input('top_n', 0)) ?: null,
+        ];
+        if (!is_array($params['dimensions'])) $params['dimensions'] = [];
+        if (!is_array($params['filters'])) $params['filters'] = [];
+        if (!is_array($params['sort'])) $params['sort'] = [];
+        //
+        // 权限：scope=project 时校验 project 成员；不传 project_ids = 跨项目查 = 仅 admin
+        $filters = $params['filters'];
+        if (!empty($filters['project_ids']) && is_array($filters['project_ids'])) {
+            foreach ($filters['project_ids'] as $pid) {
+                Project::userProject(intval($pid));  // 任一非成员抛 ApiException
+            }
+        } elseif (!$user->isAdmin()) {
+            return Base::retError('仪表盘跨项目查询仅管理员可调，请传 filters.project_ids');
+        }
+        //
+        $service = app(\App\Services\TaskReport\StatisticsService::class);
+        $result = $service->aggregate($params);
+        //
+        return Base::retSuccess('ok', [
+            'rows'    => $result['rows'],
+            'warning' => $result['warning'],
+        ]);
+    }
+
+    /**
+     * @api {post} api/project/report_dashboard/drill 14. 仪表盘下钻明细
+     *
+     * @apiDescription 需要token身份；按 drill_by 维度值 + 原 filters 返 reports 列表（Sprint 9 onDrillDown 用）
+     * @apiVersion 1.0.0
+     * @apiGroup project
+     * @apiName report_dashboard__drill
+     *
+     * @apiParam {Object} [filters]   原聚合 filters（同 report_dashboard__data）
+     * @apiParam {Object} drill_by    {user_id?, project_id?, task_id?, day?(YYYY-MM-DD)}
+     * @apiParam {Number} [limit]     默认 50，最大 200
+     *
+     * @apiSuccess {Number} ret     返回状态码（1正确、0错误）
+     * @apiSuccess {String} msg     返回信息（错误描述）
+     * @apiSuccess {Object} data    {reports}
+     *
+     * [CUSTOM:report-channel] Sprint 7-B Pass 2 · Task 7.5
+     */
+    public function report_dashboard__drill()
+    {
+        $user = User::auth();
+        //
+        $filters = Request::input('filters', []);
+        $drillBy = Request::input('drill_by', []);
+        $limit = min(max(intval(Request::input('limit', 50)), 1), 200);
+        if (!is_array($filters)) $filters = [];
+        if (!is_array($drillBy)) $drillBy = [];
+        //
+        // 权限同 data
+        if (!empty($filters['project_ids']) && is_array($filters['project_ids'])) {
+            foreach ($filters['project_ids'] as $pid) {
+                Project::userProject(intval($pid));
+            }
+        } elseif (!$user->isAdmin()) {
+            return Base::retError('drill 跨项目查询仅管理员可调，请传 filters.project_ids');
+        }
+        //
+        $query = TaskReport::query()
+            ->whereNull('deleted_at')
+            ->where('cascade_deleted', false);
+        //
+        if (isset($drillBy['user_id'])) {
+            $query->where('reporter_userid', intval($drillBy['user_id']));
+        }
+        if (isset($drillBy['project_id'])) {
+            $query->where('project_id', intval($drillBy['project_id']));
+        }
+        if (isset($drillBy['task_id'])) {
+            $query->where('task_id', intval($drillBy['task_id']));
+        }
+        if (isset($drillBy['day'])) {
+            $query->whereDate('created_at', $drillBy['day']);
+        }
+        //
+        // 沿用原聚合 filters 缩小集合
+        if (!empty($filters['user_ids']) && is_array($filters['user_ids'])) {
+            $query->whereIn('reporter_userid', $filters['user_ids']);
+        }
+        if (!empty($filters['project_ids']) && is_array($filters['project_ids'])) {
+            $query->whereIn('project_id', $filters['project_ids']);
+        }
+        if (!empty($filters['task_ids']) && is_array($filters['task_ids'])) {
+            $query->whereIn('task_id', $filters['task_ids']);
+        }
+        if (!empty($filters['template_ids']) && is_array($filters['template_ids'])) {
+            $query->whereIn('template_id', $filters['template_ids']);
+        }
+        if (!empty($filters['date_range'])
+            && is_array($filters['date_range'])
+            && count($filters['date_range']) === 2
+        ) {
+            $query->whereBetween('created_at', [
+                $filters['date_range'][0],
+                $filters['date_range'][1],
+            ]);
+        }
+        //
+        $reports = $query->orderBy('created_at', 'desc')->limit($limit)->get();
+        return Base::retSuccess('ok', [
+            'reports' => $reports->toArray(),
+        ]);
+    }
+
+    /**
+     * @api {post} api/project/report_dashboard/export 15. 仪表盘导出（CSV/Excel）
+     *
+     * @apiDescription 需要token身份；本 Pass 2 简化返聚合 rows JSON（Sprint 9 ECharts 实施时切到 stream download，
+     *                 spec §11.8 待用 maatwebsite/excel）。
+     * @apiVersion 1.0.0
+     * @apiGroup project
+     * @apiName report_dashboard__export
+     *
+     * @apiParam {String[]} dimensions
+     * @apiParam {String}   metric
+     * @apiParam {Object}   [filters]
+     * @apiParam {String}   [format]     csv / xlsx（Pass 2 仅返 rows）
+     *
+     * @apiSuccess {Number} ret     返回状态码（1正确、0错误）
+     * @apiSuccess {String} msg     返回信息（错误描述）
+     * @apiSuccess {Object} data    {format, rows, note}
+     *
+     * [CUSTOM:report-channel] Sprint 7-B Pass 2 · Task 7.5
+     */
+    public function report_dashboard__export()
+    {
+        $user = User::auth();
+        //
+        $params = [
+            'dimensions' => Request::input('dimensions', []),
+            'metric'     => trim((string) Request::input('metric', 'count')),
+            'filters'    => Request::input('filters', []),
+            'format'     => trim((string) Request::input('format', 'csv')),
+        ];
+        if (!is_array($params['dimensions'])) $params['dimensions'] = [];
+        if (!is_array($params['filters'])) $params['filters'] = [];
+        //
+        // 权限同 data
+        $filters = $params['filters'];
+        if (!empty($filters['project_ids']) && is_array($filters['project_ids'])) {
+            foreach ($filters['project_ids'] as $pid) {
+                Project::userProject(intval($pid));
+            }
+        } elseif (!$user->isAdmin()) {
+            return Base::retError('export 跨项目查询仅管理员可调，请传 filters.project_ids');
+        }
+        //
+        $service = app(\App\Services\TaskReport\StatisticsService::class);
+        $result = $service->aggregate($params);
+        //
+        return Base::retSuccess('ok', [
+            'format' => $params['format'],
+            'rows'   => $result['rows'],
+            'note'   => 'Sprint 9 dashboard ECharts 实施时切到 stream download',
+        ]);
+    }
+
+    /**
+     * @api {post} api/project/report_dashboard/charts 16. 仪表盘图表列表（占位）
+     *
+     * @apiDescription 需要token身份；Sprint 9 ECharts 仪表盘启动时建 dashboard_charts 表后改实现。
+     * @apiVersion 1.0.0
+     * @apiGroup project
+     * @apiName report_dashboard__charts
+     *
+     * @apiSuccess {Number} ret     返回状态码（1正确、0错误）
+     * @apiSuccess {String} msg     返回信息（错误描述）
+     * @apiSuccess {Object} data    {charts, note}
+     *
+     * [CUSTOM:report-channel] Sprint 7-B Pass 2 · Task 7.5
+     */
+    public function report_dashboard__charts()
+    {
+        User::auth();
+        // Sprint 9 加 dashboard_charts 表后改实现
+        return Base::retSuccess('ok', [
+            'charts' => [],
+            'note'   => 'dashboard_charts 表未实施，Sprint 9 ECharts 仪表盘启动时建表',
+        ]);
+    }
+
+    /**
+     * @api {post} api/project/report_dashboard/save_chart 17. 保存图表（占位）
+     *
+     * [CUSTOM:report-channel] Sprint 7-B Pass 2 · Task 7.5
+     */
+    public function report_dashboard__save_chart()
+    {
+        User::auth();
+        return Base::retError('图表保存功能 Sprint 9 dashboard 实施时启用');
+    }
+
+    /**
+     * @api {post} api/project/report_dashboard/delete_chart 18. 删除图表（占位）
+     *
+     * [CUSTOM:report-channel] Sprint 7-B Pass 2 · Task 7.5
+     */
+    public function report_dashboard__delete_chart()
+    {
+        User::auth();
+        return Base::retError('图表删除功能 Sprint 9 dashboard 实施时启用');
+    }
+
+    /**
+     * @api {post} api/project/report_field/build_index 19. 启用/禁用字段聚合索引
+     *
+     * @apiDescription 需要token身份；仅管理员可调（spec §13.3 v3.4 P1-2 双闸：既有 §4.2 权限映射 +
+     *                 controller 入口 isAdmin 兜底）。enable 异步 ALTER TABLE 加 STORED 虚拟列 + 索引
+     *                 （DDL 锁表风险，22 万行约 3-5min）；disable 同步 DROP（小 DDL）。
+     * @apiVersion 1.0.0
+     * @apiGroup project
+     * @apiName report_field__build_index
+     *
+     * @apiParam {Number} id    field_id
+     * @apiParam {String} op    enable / disable
+     *
+     * @apiSuccess {Number} ret     返回状态码（1正确、0错误）
+     * @apiSuccess {String} msg     返回信息（错误描述）
+     *
+     * [CUSTOM:report-channel] Sprint 7-B Pass 2 · Task 7.5 + 7.8.5
+     */
+    public function report_field__build_index()
+    {
+        $user = User::auth();
+        //
+        // v3.4 P1-2 显式硬校验（双闸：既有 §4.2 权限映射 + 本 controller isAdmin 兜底）
+        if (!$user->isAdmin()) {
+            return Base::retError('仅管理员可触发 DDL 操作（IndexBuilder 涉及 ALTER TABLE 锁表风险）');
+        }
+        //
+        $id = intval(Request::input('id', 0));
+        $op = trim((string) Request::input('op', 'enable'));
+        //
+        if ($id <= 0) {
+            return Base::retError('id 必填');
+        }
+        if (!in_array($op, ['enable', 'disable'], true)) {
+            return Base::retError('op 必须为 enable / disable');
+        }
+        //
+        try {
+            if ($op === 'enable') {
+                \App\Services\TaskReport\IndexBuilder::enable($id);
+                return Base::retSuccess('索引建立任务已提交（异步执行）');
+            } else {
+                \App\Services\TaskReport\IndexBuilder::disable($id);
+                return Base::retSuccess('索引已禁用');
+            }
+        } catch (\InvalidArgumentException $e) {
+            return Base::retError($e->getMessage());
+        } catch (\Exception $e) {
+            return Base::retError('索引操作失败: ' . $e->getMessage());
+        }
+    }
+
 }
