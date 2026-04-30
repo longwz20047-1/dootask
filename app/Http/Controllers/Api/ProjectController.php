@@ -4313,4 +4313,64 @@ class ProjectController extends AbstractController
         return Base::retSuccess('删除成功');
     }
 
+    /**
+     * @api {post} api/project/report_field/list 05. 上报字段定义列表
+     *
+     * @apiDescription 返回字段定义列表（含 builtin + custom），供前端字段管理 UI / ReportDialog.fetchFields 使用。
+     *                 scope=global 任何登录用户可读；scope=project 项目成员可读；不传 scope 时返回 global + 用户所在项目的 project scope。
+     * @apiVersion 1.0.0
+     * @apiGroup project
+     * @apiName report_field__list
+     *
+     * @apiParam {String} [scope]              global / project / 留空=both
+     * @apiParam {Number} [project_id]         scope=project 必填；scope 留空时附加该项目的 project 字段
+     * @apiParam {Boolean} [include_disabled]  默认 false，仅返 enabled=true
+     *
+     * @apiSuccess {Number} ret     返回状态码（1正确、0错误）
+     * @apiSuccess {String} msg     返回信息（错误描述）
+     * @apiSuccess {Array}  data    字段数组
+     *
+     * [CUSTOM:report-channel] Sprint 4 Pass 1 · Task A
+     */
+    public function report_field__list()
+    {
+        User::auth();
+        //
+        $scope = trim((string) Request::input('scope', ''));
+        $projectId = intval(Request::input('project_id', 0));
+        $includeDisabled = (bool) Request::input('include_disabled', false);
+        //
+        $query = TaskFieldDefinition::query();
+        if ($scope === 'global') {
+            $query->where('scope', 'global');
+        } elseif ($scope === 'project') {
+            if ($projectId <= 0) {
+                return Base::retError('scope=project 必须传 project_id');
+            }
+            // 校验项目成员（不要求负责人）
+            Project::userProject($projectId);
+            $query->where('scope', 'project')->where('project_id', $projectId);
+        } else {
+            // both: global + 该项目的 project scope（若传了 project_id）
+            if ($projectId > 0) {
+                Project::userProject($projectId);
+                $query->where(function ($q) use ($projectId) {
+                    $q->where('scope', 'global')
+                      ->orWhere(function ($q2) use ($projectId) {
+                          $q2->where('scope', 'project')->where('project_id', $projectId);
+                      });
+                });
+            } else {
+                $query->where('scope', 'global');
+            }
+        }
+        //
+        if (!$includeDisabled) {
+            $query->where('enabled', true);
+        }
+        //
+        $fields = $query->orderBy('sort')->orderBy('id')->get();
+        return Base::retSuccess('ok', $fields->toArray());
+    }
+
 }
