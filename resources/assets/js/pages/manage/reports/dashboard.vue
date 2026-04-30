@@ -1,18 +1,21 @@
-<!-- [CUSTOM:report-channel] Sprint 9 Pass 1 Task 9.1 + 9.2 + 9.3
+<!-- [CUSTOM:report-channel] Sprint 9 Pass 1 Task 9.1 + 9.2 + 9.3 / Pass 2 Task 9.4 + 9.5 + 9.6
      上报仪表盘主框架 + 6 维筛选 + ECharts 3 chart 自动选型
+     + 下钻 Modal + CSV 导出 + 看板保存（localStorage fallback）
 
      数据源:
      - POST /api/project/report_dashboard/data  (Sprint 7-B Pass 2 Task 7.5)
+     - POST /api/project/report_dashboard/drill (Sprint 7-B Pass 2)
      - POST /api/project/report_field/list      (Sprint 4 Pass 1 Task A) - 取 aggregatable 字段
      - POST /api/project/lists                  - 项目下拉
 
      v3.22 默认 dimensions=['reporter_userid'] (按汇报人拆分)
      v3.23/v1.12 双别名: 'time'/'day' 都映射到 day 别名 (与 StatisticsService::dimColMap 对齐)
 
-     Pass 2 (后续) 计划:
-     - Drill modal: POST /api/project/report_dashboard/drill
-     - 导出:        POST /api/project/report_dashboard/export
-     - 看板保存:    POST /api/project/report_dashboard/save_chart
+     Pass 2 实施:
+     - Task 9.4 Drill modal: ECharts chart.on('click') → POST report_dashboard/drill
+                             v1.9 L6 P2: warning 字段 → $Message.warning duration 8s
+     - Task 9.5 CSV 导出:    前端处理 rows（BOM + escape），无需后端
+     - Task 9.6 看板保存:    localStorage fallback（后端 dashboard_charts 表 Sprint 10 实施前）
 -->
 <template>
     <div class="report-dashboard">
@@ -81,6 +84,15 @@
                         </Button>
                     </Form>
                 </Card>
+
+                <Card v-if="savedCharts.length > 0" :title="$L('我的看板')" style="margin-top: 12px;" :bordered="false">
+                    <div v-for="chart in savedCharts" :key="chart.id" class="saved-chart-item">
+                        <span class="saved-chart-name" @click="loadChart(chart)">{{ chart.name }}</span>
+                        <Button type="text" size="small" @click="deleteChart(chart)">
+                            <Icon type="md-trash"/>
+                        </Button>
+                    </div>
+                </Card>
             </Col>
 
             <!-- 右侧图表 -->
@@ -106,6 +118,12 @@
                                     <Radio label="bar">{{ $L('柱状') }}</Radio>
                                     <Radio label="pie">{{ $L('饼图') }}</Radio>
                                 </RadioGroup>
+                                <Button @click="exportCsv" style="margin-left: 12px;">
+                                    <Icon type="md-download"/> {{ $L('导出 CSV') }}
+                                </Button>
+                                <Button @click="openSaveDialog" type="default" style="margin-left: 8px;">
+                                    <Icon type="md-bookmark"/> {{ $L('保存看板') }}
+                                </Button>
                             </div>
                             <div ref="chartContainer" class="chart-container"></div>
                         </div>
@@ -113,6 +131,24 @@
                 </Card>
             </Col>
         </Row>
+
+        <!-- Task 9.4: 下钻 Modal -->
+        <Modal v-model="drillVisible" :title="drillTitle" :width="800" :footer-hide="true">
+            <Spin v-if="drillLoading" fix/>
+            <Table :columns="drillColumns" :data="drillRows" :max-height="500"/>
+        </Modal>
+
+        <!-- Task 9.6: 保存看板 Modal -->
+        <Modal v-model="saveChartVisible" :title="$L('保存看板')" @on-ok="doSaveChart">
+            <Form :label-width="80" @submit.native.prevent>
+                <FormItem :label="$L('看板名称')">
+                    <Input v-model="saveChartName" :placeholder="$L('如: 本月工时')"/>
+                </FormItem>
+            </Form>
+            <p class="save-chart-tip">
+                {{ $L('看板配置保存到浏览器本地（localStorage），切换浏览器/清除缓存会丢失。后端持久化待 Sprint 10 dashboard_charts 表实施') }}
+            </p>
+        </Modal>
     </div>
 </template>
 
@@ -144,11 +180,23 @@ export default {
 
             // ECharts 实例
             chart: null,
+
+            // Task 9.4: 下钻 Modal
+            drillVisible: false,
+            drillLoading: false,
+            drillTitle: '',
+            drillRows: [],
+
+            // Task 9.6: 看板保存（localStorage fallback）
+            savedCharts: [],
+            saveChartName: '',
+            saveChartVisible: false,
         };
     },
     mounted() {
         this.loadAggregableFields();
         this.loadProjects();
+        this.loadSavedCharts();
         this.loadData();
     },
     beforeDestroy() {
@@ -156,6 +204,32 @@ export default {
             this.chart.dispose();
             this.chart = null;
         }
+    },
+    computed: {
+        // Task 9.4: 下钻表列定义
+        drillColumns() {
+            return [
+                {title: this.$L('任务'), key: 'task_id', width: 80},
+                {title: this.$L('项目'), key: 'project_id', width: 80},
+                {title: this.$L('用户'), key: 'reporter_userid', width: 80},
+                {
+                    title: this.$L('日期'), key: 'work_date', width: 110,
+                    render: (h, p) => h('span', p.row.work_date ? String(p.row.work_date).substr(0, 10) : '-'),
+                },
+                {
+                    title: this.$L('字段值'), key: 'values',
+                    render: (h, p) => {
+                        let values = p.row.values;
+                        if (typeof values === 'string') {
+                            try { values = JSON.parse(values || '{}'); } catch (e) { values = {}; }
+                        }
+                        values = values || {};
+                        const text = Object.entries(values).map(([k, v]) => `${k}=${v}`).join(', ');
+                        return h('span', text);
+                    },
+                },
+            ];
+        },
     },
     methods: {
         onSplitModeChange() {
@@ -271,6 +345,10 @@ export default {
             const type = this.chartType === 'auto' ? this.autoChartType() : this.chartType;
             const option = this.buildChartOption(type);
             this.chart.setOption(option, true);
+
+            // Task 9.4: 绑定下钻点击事件（off 防重复）
+            this.chart.off('click');
+            this.chart.on('click', (params) => this.onDrillDown(params));
         },
 
         buildChartOption(type) {
@@ -358,6 +436,148 @@ export default {
             };
             return map[dim] || dim;
         },
+
+        // Task 9.4: 下钻
+        async onDrillDown(params) {
+            const drillBy = {};
+            const dim0Key = this.aliasKey(this.dimensions[0]);
+            const name = params && params.name != null ? params.name : '';
+            if (dim0Key === 'day') {
+                drillBy.day = String(name);
+            } else if (dim0Key === 'reporter_userid') {
+                drillBy.user_id = parseInt(name) || 0;
+            } else if (dim0Key === 'project_id') {
+                drillBy.project_id = parseInt(name) || 0;
+            } else if (dim0Key === 'task_id') {
+                drillBy.task_id = parseInt(name) || 0;
+            }
+
+            const filters = {};
+            if (Array.isArray(this.dateRange) && this.dateRange.length === 2
+                && this.dateRange[0] && this.dateRange[1]) {
+                filters.date_range = this.dateRange;
+            }
+            if (Array.isArray(this.filterProjectIds) && this.filterProjectIds.length > 0) {
+                filters.project_ids = this.filterProjectIds;
+            }
+
+            this.drillTitle = this.$L('下钻数据') + ' - ' + String(name);
+            this.drillRows = [];
+            this.drillLoading = true;
+            this.drillVisible = true;
+            try {
+                const resp = await this.$store.dispatch('call', {
+                    url: 'project/report_dashboard/drill',
+                    data: {filters, drill_by: drillBy, limit: 50},
+                });
+                const payload = (resp && resp.data) || {};
+                this.drillRows = Array.isArray(payload.reports) ? payload.reports : [];
+                // v1.9 L6 P2: warning 字段非空 → $Message.warning duration 8s
+                if (payload.warning) {
+                    this.$Message.warning({content: payload.warning, duration: 8});
+                }
+            } catch (err) {
+                this.$Message.error((err && err.msg) || this.$L('下钻失败'));
+                this.drillRows = [];
+            } finally {
+                this.drillLoading = false;
+            }
+        },
+
+        // Task 9.5: CSV 导出（前端处理 rows，BOM + escape）
+        exportCsv() {
+            if (!Array.isArray(this.rows) || this.rows.length === 0) {
+                this.$Message.warning(this.$L('无数据可导出'));
+                return;
+            }
+
+            const headers = Object.keys(this.rows[0]);
+            const csvLines = [headers.join(',')];
+            for (const row of this.rows) {
+                const line = headers.map(h => {
+                    const val = row[h];
+                    const str = val == null ? '' : String(val);
+                    if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+                        return '"' + str.replace(/"/g, '""') + '"';
+                    }
+                    return str;
+                }).join(',');
+                csvLines.push(line);
+            }
+
+            // BOM (U+FEFF) 让 Excel 正确识别 UTF-8
+            const csv = '﻿' + csvLines.join('\n');
+            const blob = new Blob([csv], {type: 'text/csv;charset=utf-8;'});
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `report_dashboard_${new Date().toISOString().slice(0, 10)}.csv`;
+            link.click();
+            URL.revokeObjectURL(url);
+        },
+
+        // Task 9.6: 看板保存（localStorage fallback）
+        loadSavedCharts() {
+            try {
+                const saved = localStorage.getItem('report_dashboard_charts');
+                this.savedCharts = saved ? JSON.parse(saved) : [];
+                if (!Array.isArray(this.savedCharts)) {
+                    this.savedCharts = [];
+                }
+            } catch (err) {
+                this.savedCharts = [];
+            }
+        },
+        openSaveDialog() {
+            this.saveChartName = '';
+            this.saveChartVisible = true;
+        },
+        doSaveChart() {
+            if (!this.saveChartName || !this.saveChartName.trim()) {
+                this.$Message.warning(this.$L('请输入看板名称'));
+                return;
+            }
+            const chart = {
+                id: Date.now(),
+                name: this.saveChartName.trim(),
+                config: {
+                    metric: this.metric,
+                    dimensions: this.dimensions.slice(),
+                    splitMode: this.splitMode,
+                    dateRange: Array.isArray(this.dateRange) ? this.dateRange.slice() : [],
+                    filterProjectIds: Array.isArray(this.filterProjectIds) ? this.filterProjectIds.slice() : [],
+                    chartType: this.chartType,
+                },
+                created_at: new Date().toISOString(),
+            };
+            this.savedCharts.push(chart);
+            this.persistCharts();
+            this.saveChartVisible = false;
+            this.$Message.success(this.$L('看板保存成功（本地存储）'));
+        },
+        loadChart(chart) {
+            if (!chart || !chart.config) return;
+            const cfg = chart.config;
+            this.metric = cfg.metric || 'count';
+            this.dimensions = Array.isArray(cfg.dimensions) ? cfg.dimensions.slice() : ['reporter_userid'];
+            this.splitMode = cfg.splitMode || 'by_user';
+            this.dateRange = Array.isArray(cfg.dateRange) ? cfg.dateRange.slice() : [];
+            this.filterProjectIds = Array.isArray(cfg.filterProjectIds) ? cfg.filterProjectIds.slice() : [];
+            this.chartType = cfg.chartType || 'auto';
+            this.loadData();
+        },
+        deleteChart(chart) {
+            this.savedCharts = this.savedCharts.filter(c => c.id !== chart.id);
+            this.persistCharts();
+            this.$Message.success(this.$L('看板已删除'));
+        },
+        persistCharts() {
+            try {
+                localStorage.setItem('report_dashboard_charts', JSON.stringify(this.savedCharts));
+            } catch (err) {
+                this.$Message.warning(this.$L('localStorage 不可用，看板未持久化'));
+            }
+        },
     },
 };
 </script>
@@ -392,6 +612,31 @@ export default {
     .chart-container {
         width: 100%;
         height: 480px;
+    }
+
+    .saved-chart-item {
+        display: flex;
+        align-items: center;
+        padding: 4px 8px;
+        border-radius: 4px;
+
+        &:hover {
+            background-color: #f7f7f7;
+        }
+
+        .saved-chart-name {
+            flex: 1;
+            cursor: pointer;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+    }
+
+    .save-chart-tip {
+        font-size: 12px;
+        color: #999;
+        margin-top: 8px;
     }
 }
 </style>
