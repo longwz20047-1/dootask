@@ -105,6 +105,25 @@
                     :avatar-size="24"
                     border/>
             </FormItem>
+            <!-- [CUSTOM:report-channel] Sprint 8 Pass 1 · Task 8.0 v3.26 任务创建表单"上报模板"下拉 -->
+            <FormItem :label="$L('上报模板')">
+                <Select v-model="addData.template_id" :placeholder="$L('按工作流自动')" clearable>
+                    <Option :value="null">{{$L('按工作流自动 resolve')}}</Option>
+                    <OptionGroup :label="$L('全局模板')" v-if="globalTemplates.length > 0">
+                        <Option v-for="tpl in globalTemplates" :key="'g-' + tpl.id" :value="tpl.id">
+                            {{ tpl.name }}{{ tpl.is_default ? '（' + $L('默认') + '）' : '' }}
+                        </Option>
+                    </OptionGroup>
+                    <OptionGroup :label="$L('项目模板')" v-if="projectTemplates.length > 0">
+                        <Option v-for="tpl in projectTemplates" :key="'p-' + tpl.id" :value="tpl.id">
+                            {{ tpl.name }}
+                        </Option>
+                    </OptionGroup>
+                </Select>
+                <p style="color:#999;font-size:12px;margin:4px 0 0;line-height:1.4;">
+                    {{$L('显式选择覆盖工作流默认；留空则按 flow_item → project → global 自动查找')}}
+                </p>
+            </FormItem>
             <FormItem>
                 <div slot="label" class="visibility-text" @click="showCisibleDropdown">
                     {{ $L('可见性') }}
@@ -233,8 +252,14 @@ export default {
                 // 可见性
                 visibility_appoint: 1,
                 visibility_appointor: [],
+                // [CUSTOM:report-channel] Sprint 8 Pass 1 · Task 8.0 v3.26 上报模板（顶层 4-tier 优先级最高）
+                template_id: null,
             },
             addDefault: {},
+
+            // [CUSTOM:report-channel] Sprint 8 Pass 1 · Task 8.0 上报模板下拉数据
+            globalTemplates: [],
+            projectTemplates: [],
 
             cascaderShow: false,
             cascaderData: [],
@@ -268,6 +293,8 @@ export default {
     async mounted() {
         this.initCascaderData();
         await this.initProjectData();
+        // [CUSTOM:report-channel] Sprint 8 Pass 1 · Task 8.0 加载上报模板列表
+        this.loadReportTemplates();
         this.$nextTick(() => {
             this.$refs.input.focus();
             this.templateCompareData = {name: this.addData.name, content: this.addData.content};
@@ -318,6 +345,8 @@ export default {
             if (projectId > 0) {
                 $A.IDBSave("cacheAddTaskProjectId", projectId);
                 this.$store.dispatch("updateTaskTemplates", projectId).then(this.setTaskDefaultTemplate)
+                // [CUSTOM:report-channel] Sprint 8 Pass 1 · Task 8.0 切换项目时重新拉取上报模板
+                this.loadReportTemplates();
             }
         },
         'addData.column_id'(columnId) {
@@ -627,6 +656,28 @@ export default {
             if (defaultTemplate) {
                 this.setTaskTemplate(defaultTemplate);
             }
+        },
+
+        // [CUSTOM:report-channel] Sprint 8 Pass 1 · Task 8.0 v3.26 拉取上报模板（global + 当前项目）
+        loadReportTemplates() {
+            const projectId = parseInt(this.addData.project_id, 10) || 0;
+            this.$store.dispatch('call', {
+                url: 'project/report_template/list',
+                method: 'post',
+                data: {
+                    // both 模式：scope 留空 + scope_id=projectId 时返 global + 该 project 的模板
+                    scope_id: projectId,
+                    include_disabled: false,
+                },
+            }).then(({data}) => {
+                const all = Array.isArray(data) ? data : (data?.rows || []);
+                this.globalTemplates = all.filter(t => t.scope === 'global');
+                this.projectTemplates = all.filter(t => t.scope === 'project');
+            }).catch(() => {
+                // 失败仅影响下拉，不阻断创建任务流程
+                this.globalTemplates = [];
+                this.projectTemplates = [];
+            });
         },
 
         onAI() {
