@@ -122,6 +122,88 @@ class ProjectTask extends AbstractModel
     ];
 
     /**
+     * [CUSTOM:report-channel] Sprint 7-B Pass 1 · Task 7.6
+     * Eloquent saving 钩子接入 TriggerEngine（spec §21.2 + §21.2.1 v3.24）
+     *
+     * 设计偏离声明：dootask Observer 主流为 ProjectTaskObserver，但既有 Observer 不含 saving，
+     *               本 plan 用 boot()::saving 是有意偏离（v1.12 line ~1888-1929）。
+     *
+     * 触发事件（dirty 列检测）：
+     *   - on_complete: complete_at null → not null
+     *   - 其他事件（on_start / on_status_change / on_flow_change）暂不在本 saving 钩子绑定
+     *     （dootask ProjectTask 模型无 started_at / status 列；status 由 column / flow_item_id
+     *      间接表达，相关事件在后续 Sprint 通过 Observer 路径或专项调用补齐）
+     *
+     * 守卫（v3.24 P0-V3.23-1 shouldTriggerForCurrentUser）：
+     *   仅当 currentUserid 在 trigger rule 的 target 范围内才触发，避免协助人完成
+     *   owner-only block 规则时被死锁。
+     */
+    protected static function boot()
+    {
+        parent::boot();
+
+        static::saving(function (self $task) {
+            // on_complete: complete_at 从 null → not null
+            if ($task->isDirty('complete_at')
+                && $task->complete_at
+                && !$task->getOriginal('complete_at')
+            ) {
+                if (self::shouldTriggerForCurrentUser($task, 'on_complete')) {
+                    /** @var \App\Services\TaskReport\TriggerEngine $engine */
+                    $engine = app(\App\Services\TaskReport\TriggerEngine::class);
+                    // block 规则不满足时抛 ApiException 阻断 save（事务自动 rollback）
+                    $engine->handle('on_complete', $task);
+                }
+            }
+        });
+    }
+
+    /**
+     * v3.24 P0-V3.23-1 守卫：仅当前 user 在 trigger_rule.target 范围内才触发
+     *
+     * 单独提取静态方法以便：
+     *   1) 钩子内可读性更高
+     *   2) 测试时可直接调用
+     */
+    protected static function shouldTriggerForCurrentUser(self $task, string $event): bool
+    {
+        $userid = self::currentUserId();
+        if (!$userid) {
+            return false;
+        }
+        /** @var \App\Services\TaskReport\TemplateResolver $resolver */
+        $resolver = app(\App\Services\TaskReport\TemplateResolver::class);
+        $tpl = $resolver->resolveForTask($task);
+        if (!$tpl || empty($tpl->trigger_rules)) {
+            return false;
+        }
+        /** @var \App\Services\TaskReport\TriggerEngine $engine */
+        $engine = app(\App\Services\TaskReport\TriggerEngine::class);
+        foreach ($tpl->trigger_rules as $rule) {
+            if (($rule['event'] ?? null) !== $event) {
+                continue;
+            }
+            $targetUserIds = $engine->resolveTargets($task, $rule['target'] ?? 'reporter');
+            if (in_array($userid, $targetUserIds, true)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 兼容 dootask User::auth() 异常（无登录会抛 ApiException）和 null 情况
+     */
+    private static function currentUserId(): int
+    {
+        try {
+            return (int) \App\Models\User::userid();
+        } catch (\Throwable $e) {
+            return 0;
+        }
+    }
+
+    /**
      * 附件数量
      * @return int
      */
