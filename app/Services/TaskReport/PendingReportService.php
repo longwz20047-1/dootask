@@ -15,8 +15,9 @@
 //   - 计算字段：my_role (owner/collaborator) + my_report_count + is_urgent (deadline < 24h)
 //
 // 性能：
-//   - my_report_count 用 LEFT JOIN + COUNT(CASE) 聚合（依赖 idx_task_reporter
-//     索引，Sprint 1 Pass 1 M1 fix 已建）
+//   - my_report_count 用相关子查询 COUNT(*)（依赖 idx_task_reporter 索引，
+//     Sprint 1 Pass 1 M1 fix 已建）。子查询而非 leftJoin 是为了规避 dootask
+//     表前缀 (pre_) 把 alias 改写成 pre_r 导致 unknown column。
 //   - block min_count 评估在 PHP 层（resolver + filter()），避免 SQL 内 JSON_EXTRACT
 //     全表扫；max 100 条上限保证内存可控
 //
@@ -58,24 +59,33 @@ class PendingReportService
             $dateFrom = now()->subDays(14)->toDateString();
         }
 
+        // dootask 用 DB_PREFIX (pre_)，orderByRaw 等原生 SQL 片段需手动加前缀，
+        // builder 方法（where/leftJoin）会自动加前缀，不能混用。
+        $prefix = DB::connection()->getTablePrefix();
+        $taskTable = $prefix . 'project_tasks';
+
+        // 用相关子查询而非 leftJoin 算 my_report_count，规避 dootask 表前缀 (pre_)
+        // 把别名 `r`、`pu` 自动改写成 `pre_r` 导致 unknown column 错误。
+        // 子查询走 Builder 接口，Laravel 会正确给真实表名加前缀，不动列引用。
+        $reportCountSub = function ($q) use ($userid) {
+            $q->from('project_task_reports')
+                ->selectRaw('COUNT(*)')
+                ->whereColumn('project_task_reports.task_id', 'project_tasks.id')
+                ->where('project_task_reports.reporter_userid', $userid)
+                ->whereNull('project_task_reports.deleted_at');
+        };
+
         $tasks = ProjectTask::query()
             ->select('project_tasks.*')
-            ->selectRaw(
-                'COALESCE(SUM(CASE WHEN r.id IS NOT NULL THEN 1 ELSE 0 END), 0) as my_report_count'
-            )
-            ->leftJoin('project_task_reports as r', function ($join) use ($userid) {
-                $join->on('r.task_id', '=', 'project_tasks.id')
-                    ->where('r.reporter_userid', $userid)
-                    ->whereNull('r.deleted_at');
-            })
+            ->selectSub($reportCountSub, 'my_report_count')
             // 边界 1: 用户范围（owner / 协助人 project_task_users 实时含 owner=0）
             ->where(function ($q) use ($userid) {
                 $q->where('project_tasks.userid', $userid)
                     ->orWhereExists(function ($sub) use ($userid) {
                         $sub->select(DB::raw(1))
-                            ->from('project_task_users as pu')
-                            ->whereColumn('pu.task_id', 'project_tasks.id')
-                            ->where('pu.userid', $userid);
+                            ->from('project_task_users')
+                            ->whereColumn('project_task_users.task_id', 'project_tasks.id')
+                            ->where('project_task_users.userid', $userid);
                     });
             })
             // 边界 2: 软删 task 过滤
@@ -95,13 +105,13 @@ class PendingReportService
             // 时间筛选（任务 created_at 落在区间内）
             ->when($dateFrom, fn($q) => $q->where('project_tasks.created_at', '>=', $dateFrom))
             ->when($dateTo, fn($q) => $q->where('project_tasks.created_at', '<=', $dateTo))
-            ->groupBy('project_tasks.id')
             // 紧急排序：end_at NULL 最后 / end_at 最近优先 / complete_at 已完成在后 / 创建时间倒序
+            // 原生 SQL 片段须用真实表名（已加 DB_PREFIX）
             ->orderByRaw(
-                'project_tasks.end_at IS NULL ASC, '
-                . 'project_tasks.end_at ASC, '
-                . 'project_tasks.complete_at DESC, '
-                . 'project_tasks.created_at DESC'
+                "{$taskTable}.end_at IS NULL ASC, "
+                . "{$taskTable}.end_at ASC, "
+                . "{$taskTable}.complete_at DESC, "
+                . "{$taskTable}.created_at DESC"
             )
             ->get();
 
