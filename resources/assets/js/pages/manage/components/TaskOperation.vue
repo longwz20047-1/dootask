@@ -47,7 +47,13 @@
 
                         <template v-if="task.parent_id === 0">
                             <template v-if="operationShow">
-                                <EDropdownItem command="favorite" divided>
+                                <!-- [CUSTOM:report-channel] Sprint 7-D Pass 2 Task 7-D.4 -->
+                                <EDropdownItem command="report" divided>
+                                    <div class="item">
+                                        <Icon type="ios-cloud-upload-outline" />{{$L('汇报')}}
+                                    </div>
+                                </EDropdownItem>
+                                <EDropdownItem command="favorite">
                                     <div class="item" :class="{favorited: isFavorited}">
                                         <i class="taskfont movefont">&#xe683;</i>{{$L(isFavorited ? '取消收藏' : '收藏')}}
                                     </div>
@@ -405,6 +411,12 @@ export default {
 
                 case 'favorite':
                     this.toggleFavorite();
+                    break;
+
+                // [CUSTOM:report-channel] Sprint 7-D Pass 2 Task 7-D.4
+                // 永久可见的"汇报"入口（与 case 'complete' 流程独立，不触发任务完成）
+                case 'report':
+                    this.$refs.reportDialog.open(this.task);
                     break;
 
                 case 'send':

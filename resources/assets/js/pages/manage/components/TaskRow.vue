@@ -44,6 +44,22 @@
                                 <i class="taskfont">&#xe71f;</i>
                                 <em>{{item.sub_complete}}/{{item.sub_num}}</em>
                             </div>
+                            <!-- [CUSTOM:report-channel] Sprint 7-D Pass 2 Task 7-D.6 汇报状态 Tag -->
+                            <Tag
+                                v-if="item.report_status === 'not_reported'"
+                                color="warning"
+                                size="small"
+                                class="report-status-tag">{{$L('未汇报')}}</Tag>
+                            <Tag
+                                v-else-if="item.report_status === 'partial_reported'"
+                                color="primary"
+                                size="small"
+                                class="report-status-tag">{{$L('部分汇报')}}</Tag>
+                            <Tag
+                                v-else-if="item.report_status === 'all_reported'"
+                                color="success"
+                                size="small"
+                                class="report-status-tag">{{$L('全部汇报')}}</Tag>
                         </div>
                     </Col>
                     <Col span="3" class="row-column">
