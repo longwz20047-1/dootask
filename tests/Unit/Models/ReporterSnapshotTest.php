@@ -100,6 +100,14 @@ class ReporterSnapshotTest extends TestCase
     /**
      * Sprint 5b.5 上报人禁用后，TaskReport->reporter 关联仍可解析到原 user
      * （不做 disable_at 过滤，否则 list 端点丢字段）。
+     *
+     * 注：使用 DB::table()->update() 绕过 UserObserver::updated 触发的
+     * Apps::dispatchUserHook → Ihttp::ihttp_request 链（PHPUnit 9 把
+     * parse_url 缺 query key 的 notice 转成 exception，污染本测试上下文）。
+     * 同 spec §3.4 主测试 test_reporter_userid_persists_after_user_disabled
+     * 是单 case 跑 → observer 链路只触一次，error_reporting 全局降级有效；
+     * 多 case 跑时降级被 Laravel TestCase tearDown 重置，第二次触链就炸。
+     * 本测试只验"DB 已写入 disable_at + 关联仍解析"，无需观察 observer 行为。
      */
     public function test_reporter_relation_still_resolves_after_user_disabled()
     {
@@ -114,9 +122,10 @@ class ReporterSnapshotTest extends TestCase
             'cascade_deleted' => false,
         ]);
 
-        // 禁用账号
-        $reporter->disable_at = now();
-        $reporter->save();
+        // 直 DB 写 disable_at（绕开 UserObserver::updated → dispatchUserHook → Ihttp）
+        \DB::table('users')->where('userid', $reporter->userid)->update([
+            'disable_at' => now(),
+        ]);
 
         // reporter 关联仍能解析到原 user（即使 disable_at 已设）
         $fresh = $report->fresh();
@@ -128,6 +137,8 @@ class ReporterSnapshotTest extends TestCase
     /**
      * Sprint 5b.5 离职上报人的历史 report 仍可在 forTaskAndChildren scope 查询返回
      * （不被 reporter disable_at 排除）。
+     *
+     * 同样直 DB 写 disable_at 绕开 observer webhook 链。
      */
     public function test_disabled_reporter_reports_still_returned_by_scope()
     {
@@ -142,9 +153,10 @@ class ReporterSnapshotTest extends TestCase
             'cascade_deleted' => false,
         ]);
 
-        // 离职
-        $reporter->disable_at = now();
-        $reporter->save();
+        // 直 DB 写 disable_at（绕开 observer，理由同上）
+        \DB::table('users')->where('userid', $reporter->userid)->update([
+            'disable_at' => now(),
+        ]);
 
         // scope 查询不应过滤掉离职用户的历史 report
         $reports = TaskReport::forTaskAndChildren($task->id)->get();
