@@ -66,7 +66,20 @@ this.$L('共(*)条', n)
 
 ## 集中提取流程（Sprint 10 Task 10.4）
 
-Sprint 10 末次执行：
+Sprint 10 Task 10.4 分两步：
+
+**Step 1（手动）**：把 Sprint 1-2 历史字面量包一层 `Doo::translate(...)` / `$L(...)`：
+
+```bash
+# 先 grep 列出 Sprint 1-2 报告通道相关代码内未包装的中文字面量
+grep -rn "throw new ApiException\|Base::retError\|Base::retSuccess" \
+    app/Http/Controllers/Api/ProjectController.php \
+    | grep -P "['\"][^'\"]*[\x{4e00}-\x{9fa5}][^'\"]*['\"]" \
+    | grep -v "Doo::translate"
+# 然后人工逐处加 Doo::translate() 包装
+```
+
+**Step 2（自动）**：运行提取脚本扫描所有已包装字符串：
 
 ```bash
 cd dootask/language && php translate.php
@@ -74,9 +87,11 @@ cd dootask/language && php translate.php
 
 自动：
 
-1. 扫描所有 `Doo::translate(...)` / `$L(...)` 调用
+1. 扫描所有 `Doo::translate(...)` / `$L(...)` 调用（含 Step 1 新包装的）
 2. 提取中文原文追加到 `original-api.txt` / `original-web.txt`
 3. 重新生成 `translate.json`（之后一次性人工翻译 en/ja/ko 等）
+
+**注意**：`translate.php` **不会**自动扫描未包装的字面量。Sprint 10 必须先做 Step 1 手动包装才能让 Step 2 提取生效。
 
 ## 报告通道当前状态
 
