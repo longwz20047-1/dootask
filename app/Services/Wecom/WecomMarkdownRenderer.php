@@ -2,6 +2,7 @@
 
 namespace App\Services\Wecom;
 
+use App\Models\ProjectTask;
 use Carbon\Carbon;
 
 class WecomMarkdownRenderer
@@ -143,5 +144,56 @@ class WecomMarkdownRenderer
         ];
 
         return trim(view('wecom.notifications.task_assigned', $vars)->render());
+    }
+
+    /**
+     * 渲染上报触发通知（remind 模式）
+     *
+     * spec §10A · plan v1.9 L1 P0 closure：缺此方法 + blade 会让 §21.2 pushRemind
+     * enqueue 时 rendered_markdown 为空 → WecomPushTask 推空字符串 → mode='remind' 链路死。
+     *
+     * 范式照抄 renderTaskAssigned（line 112-146）：
+     *   - end_at 是 string 必须 Carbon::parse + try/catch fallback null
+     *   - base_url 走 config('wecom.dootask_base_url')，不是 config('app.url')
+     *   - blade 内变量必须 escape($var) 包裹（防 markdown 注入）
+     *   - URL 走 entry?redirect= 包装（spec §4C.14 静默 OAuth 深链）
+     *
+     * 消费者：Sprint 7-A Task 7.2 TriggerEngine::pushRemind
+     *
+     * @param array $payload 来自 WecomNotification.payload JSON 解码（含 task_id/template_id/rule_index/message/userid）
+     * @return string Markdown 文本（写入 wecom_notifications.rendered_markdown 字段）
+     * [CUSTOM:report-channel]
+     */
+    public function renderReportRemind(array $payload): string
+    {
+        $task = ProjectTask::find($payload['task_id'] ?? 0);
+        if (!$task) {
+            return '';
+        }
+
+        // end_at 处理（参考 ProjectTask.php:236 + 既有 line 50-57 范式）
+        $endAtFormatted = null;
+        if (!empty($task->end_at)) {
+            try {
+                $endAtFormatted = Carbon::parse($task->end_at)->format('Y-m-d H:i');
+            } catch (\Throwable $e) {
+                $endAtFormatted = null;
+            }
+        }
+
+        $project = $task->project;
+        // dootask 私有部署 0 海外用户（spec v3.8），中文字面量
+        $messageText = $payload['message'] ?? '请尽快完成本次任务上报';
+
+        return trim(view('wecom.notifications.report_remind', [
+            'taskId'         => $task->id,
+            'taskName'       => $task->name ?? '',
+            'projectId'      => $task->project_id,
+            'projectName'    => $project ? ($project->name ?? '') : '',
+            'endAtFormatted' => $endAtFormatted,
+            'messageText'    => $messageText,
+            'baseUrl'        => rtrim(config('wecom.dootask_base_url') ?? '', '/'),
+            'escape'         => fn(?string $s): string => self::escapeMarkdownChars($s),
+        ])->render());
     }
 }
