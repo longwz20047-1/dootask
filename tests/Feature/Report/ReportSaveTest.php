@@ -198,4 +198,80 @@ class ReportSaveTest extends TestCase
         $this->assertSame(0, $resp['ret']);
         $this->assertStringContainsString('JSON 对象', $resp['msg']);
     }
+
+    /**
+     * Sprint 2 final reviewer I-1: audit logging 零测试覆盖
+     * 断言 report__save 写 pre_project_logs（task_id/userid + record JSON 含 report_id/work_date/values）
+     */
+    public function test_save_writes_audit_log_with_record(): void
+    {
+        ['user' => $user, 'task' => $task] = $this->setupProjectAndTask();
+
+        $resp = $this->callReportSave($user, [
+            'task_id' => $task->id,
+            'values'  => ['hours' => 2.5, 'note' => 'progress note'],
+        ]);
+        $this->assertSame(1, $resp['ret']);
+
+        // 断言 project_logs 写入
+        $this->assertDatabaseHas('project_logs', [
+            'task_id' => $task->id,
+            'userid'  => $user->userid,
+        ]);
+
+        $log = \App\Models\ProjectLog::where('task_id', $task->id)
+            ->orderBy('id', 'desc')->first();
+        $this->assertNotNull($log);
+
+        // 验证 detail 含"提交"或"更新"
+        $this->assertMatchesRegularExpression('/提交|更新/', $log->detail);
+
+        // I-2 修复后 detail 仅含 key 列表（不拼 values）
+        $this->assertStringContainsString('hours', $log->detail);
+        $this->assertStringContainsString('note', $log->detail);
+        // 反向断言：detail 中绝不应出现 user value（textarea 字符串）
+        $this->assertStringNotContainsString('progress note', $log->detail);
+
+        // 验证 record JSON 结构
+        $record = is_string($log->record) ? json_decode($log->record, true) : $log->record;
+        $this->assertArrayHasKey('report_id', $record);
+        $this->assertArrayHasKey('work_date', $record);
+        $this->assertArrayHasKey('values', $record);
+        $this->assertEquals(2.5, $record['values']['hours']);
+        $this->assertEquals('progress note', $record['values']['note']);
+    }
+
+    /**
+     * Sprint 2 final reviewer I-1: detail 应区分创建 vs 编辑
+     */
+    public function test_save_audit_log_distinguishes_create_vs_update(): void
+    {
+        ['user' => $user, 'task' => $task] = $this->setupProjectAndTask();
+
+        // 创建
+        $resp = $this->callReportSave($user, [
+            'task_id' => $task->id,
+            'values'  => ['hours' => 2],
+        ]);
+        $this->assertSame(1, $resp['ret']);
+        $reportId = $resp['data']['report']['id'] ?? null;
+        $this->assertNotNull($reportId);
+
+        $createLog = \App\Models\ProjectLog::where('task_id', $task->id)
+            ->orderBy('id', 'desc')->first();
+        $this->assertStringContainsString('提交', $createLog->detail);
+
+        // 编辑
+        $resp2 = $this->callReportSave($user, [
+            'task_id'   => $task->id,
+            'report_id' => $reportId,
+            'values'    => ['hours' => 4],
+        ]);
+        $this->assertSame(1, $resp2['ret']);
+
+        $updateLog = \App\Models\ProjectLog::where('task_id', $task->id)
+            ->orderBy('id', 'desc')->first();
+        $this->assertStringContainsString('更新', $updateLog->detail);
+        $this->assertNotEquals($createLog->id, $updateLog->id);
+    }
 }
