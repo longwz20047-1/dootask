@@ -127,6 +127,12 @@ export default [
                 path: 'reports/my-pending',
                 component: () => import('./pages/manage/reports/my-pending.vue'),
             },
+            // [CUSTOM:report-channel] Sprint 9 Pass 1 Task 9.1
+            {
+                name: 'manage-reports-dashboard',
+                path: 'reports/dashboard',
+                component: () => import('./pages/manage/reports/dashboard.vue'),
+            },
         ]
     },
     {
