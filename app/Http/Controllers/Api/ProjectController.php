@@ -1196,6 +1196,27 @@ class ProjectController extends AbstractController
         } elseif ($deleted == 'yes') {
             $builder->onlyTrashed();
         }
+        // [CUSTOM:report-channel] Sprint 7-D Pass 2 Task 7-D.6: 当前用户是否已汇报
+        // has_my_report=0 仅未汇报；=1 仅已汇报；不传则不过滤
+        $hasMyReport = Request::input('has_my_report', null);
+        if ($hasMyReport !== null && $hasMyReport !== '') {
+            $myReportBool = filter_var($hasMyReport, FILTER_VALIDATE_BOOLEAN);
+            if ($myReportBool) {
+                $builder->whereExists(function ($sub) use ($userid) {
+                    $sub->from('project_task_reports')
+                        ->whereColumn('project_task_reports.task_id', 'project_tasks.id')
+                        ->where('project_task_reports.reporter_userid', $userid)
+                        ->whereNull('project_task_reports.deleted_at');
+                });
+            } else {
+                $builder->whereNotExists(function ($sub) use ($userid) {
+                    $sub->from('project_task_reports')
+                        ->whereColumn('project_task_reports.task_id', 'project_tasks.id')
+                        ->where('project_task_reports.reporter_userid', $userid)
+                        ->whereNull('project_task_reports.deleted_at');
+                });
+            }
+        }
         //
         foreach ($sorts as $column => $direction) {
             if (!in_array($column, ['complete_at', 'archived_at', 'end_at', 'deleted_at'])) continue;
@@ -1283,12 +1304,80 @@ class ProjectController extends AbstractController
                 unset($item['project_column']);
             }
         }
+        // [CUSTOM:report-channel] Sprint 7-D Pass 2 Task 7-D.6: 三态汇报状态
+        // 不改 SQL builder（plan v1.8 N6 警示 task__lists 257+ 行复杂度），事后 enrich
+        $data['data'] = $this->enrichReportStatus($data['data']);
         //
         if ($list->currentPage() === 1) {
             $data['deleted_id'] = Deleted::ids('projectTask', $user->userid, $timerange->deleted);
         }
         //
         return Base::retSuccess('success', $data);
+    }
+
+    /**
+     * [CUSTOM:report-channel] Sprint 7-D Pass 2 Task 7-D.6
+     * 给 task__lists 行结果挂上 report_status 字段：
+     *   - not_reported     : 0 条 report
+     *   - partial_reported : reporter_count < expected_user_count
+     *   - all_reported     : reporter_count >= expected_user_count
+     *
+     * expected_user_count = project_task_users 总数（含 owner），缺省 fallback 1。
+     * 性能：reports 与 task_users 各一次 IN 查询 + groupBy，无 N+1。
+     *
+     * @param array $tasks  task__lists transform 后的数组（每项已是 array）
+     * @return array
+     */
+    private function enrichReportStatus(array $tasks): array
+    {
+        if (empty($tasks)) {
+            return $tasks;
+        }
+
+        $taskIds = array_column($tasks, 'id');
+
+        // 一次性查所有 task 的 report_count + reporter_count
+        $reportStats = DB::table('project_task_reports')
+            ->whereIn('task_id', $taskIds)
+            ->whereNull('deleted_at')
+            ->where('cascade_deleted', false)
+            ->groupBy('task_id')
+            ->select(
+                'task_id',
+                DB::raw('COUNT(*) as report_count'),
+                DB::raw('COUNT(DISTINCT reporter_userid) as reporter_count')
+            )
+            ->get()
+            ->keyBy('task_id');
+
+        // 一次性查所有 task 的 expected_user_count（task_users 总数）
+        $expectedStats = DB::table('project_task_users')
+            ->whereIn('task_id', $taskIds)
+            ->groupBy('task_id')
+            ->select('task_id', DB::raw('COUNT(*) as user_count'))
+            ->get()
+            ->keyBy('task_id');
+
+        foreach ($tasks as &$task) {
+            $tid = $task['id'];
+            $stat = $reportStats->get($tid);
+            if (!$stat || (int) $stat->report_count === 0) {
+                $task['report_status'] = 'not_reported';
+                continue;
+            }
+            $expected = isset($expectedStats[$tid])
+                ? (int) $expectedStats[$tid]->user_count
+                : 1; // fallback owner only
+            if ($expected <= 0) {
+                $expected = 1;
+            }
+            $task['report_status'] = ((int) $stat->reporter_count >= $expected)
+                ? 'all_reported'
+                : 'partial_reported';
+        }
+        unset($task);
+
+        return $tasks;
     }
 
     /**
