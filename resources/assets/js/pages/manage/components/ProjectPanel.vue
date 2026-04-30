@@ -57,6 +57,8 @@
                             <EDropdownItem command="task_tag">{{$L('任务标签')}}</EDropdownItem>
                             <!-- [CUSTOM:report-channel] Sprint 4 Pass 1 · Task 4.5.1 -->
                             <EDropdownItem command="report_fields">{{$L('上报字段')}}</EDropdownItem>
+                            <!-- [CUSTOM:report-channel] Sprint 8 Pass 1 · Task 8.5 -->
+                            <EDropdownItem command="report_templates">{{$L('上报模板')}}</EDropdownItem>
                             <EDropdownItem command="workflow">{{$L('工作流设置')}}</EDropdownItem>
                             <EDropdownItem command="user" divided>{{$L('成员管理')}}</EDropdownItem>
                             <EDropdownItem command="invite">{{$L('邀请链接')}}</EDropdownItem>
@@ -542,6 +544,14 @@
             <ProjectReportFields v-if="reportFieldsShow" :project-id="projectId"/>
         </DrawerOverlay>
 
+        <!--[CUSTOM:report-channel] Sprint 8 Pass 1 · Task 8.5 上报模板-->
+        <DrawerOverlay
+            v-model="reportTemplatesShow"
+            placement="right"
+            :size="720">
+            <ProjectReportTemplates v-if="reportTemplatesShow" :project-id="projectId"/>
+        </DrawerOverlay>
+
         <!--任务标签-->
         <DrawerOverlay
             v-model="taskTagShow"
@@ -600,6 +610,8 @@ import ProjectTaskTag from "./ProjectTaskTag";
 import ProjectTaskTemplate from "./ProjectTaskTemplate";
 // [CUSTOM:report-channel] Sprint 4 Pass 1 · Task 4.5.1
 import ProjectReportFields from "./ProjectReportFields";
+// [CUSTOM:report-channel] Sprint 8 Pass 1 · Task 8.5
+import ProjectReportTemplates from "./ProjectReportTemplates";
 import ProjectWorkflow from "./ProjectWorkflow";
 import ProjectPermission from "./ProjectPermission";
 import TaskMenu from "./TaskMenu";
@@ -622,6 +634,7 @@ export default {
         ProjectTaskTag,
         ProjectTaskTemplate,
         ProjectReportFields,
+        ProjectReportTemplates,
         ProjectWorkflow,
         ProjectPermission,
         DrawerOverlay,
@@ -681,6 +694,8 @@ export default {
             taskTagShow: false,
             // [CUSTOM:report-channel] Sprint 4 Pass 1 · Task 4.5.1
             reportFieldsShow: false,
+            // [CUSTOM:report-channel] Sprint 8 Pass 1 · Task 8.5
+            reportTemplatesShow: false,
 
             workflowShow: false,
             logShow: false,
@@ -1576,6 +1591,11 @@ export default {
                 // [CUSTOM:report-channel] Sprint 4 Pass 1 · Task 4.5.1
                 case "report_fields":
                     this.reportFieldsShow = true;
+                    break;
+
+                // [CUSTOM:report-channel] Sprint 8 Pass 1 · Task 8.5
+                case "report_templates":
+                    this.reportTemplatesShow = true;
                     break;
 
                 case "workflow":
