@@ -280,6 +280,10 @@ class IndexController extends InvokeController
         Task::deliver(new \App\Tasks\WecomOrgSyncTask());
         // M1 企微任务通知重试调度（Task 内部 Cache 锁节流到 5 分钟执行一次）
         Task::deliver(new \App\Tasks\WecomPushRetryTask());
+        // [CUSTOM:report-channel] Sprint 7-B Pass 1 · Task 7.7
+        // 上报模板 daily/weekly 触发调度（Task 内部 Cache 锁防跨日/跨周重复）
+        Task::deliver(new \App\Tasks\ScheduledDailyReportTriggerTask());
+        Task::deliver(new \App\Tasks\ScheduledWeeklyReportTriggerTask());
 
         return "success";
     }
