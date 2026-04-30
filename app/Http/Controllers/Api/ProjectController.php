@@ -54,6 +54,11 @@ use App\Models\TaskFieldAttachment;
 use App\Models\TaskFieldDefinition;
 use App\Services\TaskReport\FieldDefinitionCache;
 use App\Services\TaskReport\FieldValuesValidator;
+// [CUSTOM:report-channel] Sprint 7-B Pass 1
+use App\Models\TaskReportTemplate;
+use App\Models\TaskReportTemplateField;
+use App\Models\TaskReportTriggerLog;
+use App\Services\TaskReport\TemplateResolver;
 
 /**
  * @apiDefine project
@@ -4485,6 +4490,375 @@ class ProjectController extends AbstractController
             'path'          => $info['path'] ?? '',
             'url'           => $info['url'] ?? '',
         ]);
+    }
+
+    // ======================================================================
+    // [CUSTOM:report-channel] Sprint 7-B Pass 1 (Task 7.5)：模板管理 5 端点 + trigger_log__list
+    // 设计：endpoints 用 `new + 直接属性赋值` 创建/编辑（绕开 AbstractModel::updateInstance 的
+    //      array_cast 双编码 bug，参 Sprint 6 Pass 2 fef67c720 范式）
+    // ======================================================================
+
+    /**
+     * @api {post} api/project/report_template/list 07. 上报模板列表
+     *
+     * @apiDescription 需要token身份；scope=global 任何登录用户可读；scope=project 项目成员可读；
+     *                 scope 留空时返 global + 用户所在项目的 project scope（若传 scope_id）。
+     * @apiVersion 1.0.0
+     * @apiGroup project
+     * @apiName report_template__list
+     *
+     * @apiParam {String}  [scope]              global / project / 留空=both
+     * @apiParam {Number}  [scope_id]           scope=project 时 = project_id
+     * @apiParam {Boolean} [include_disabled]   默认 false
+     *
+     * @apiSuccess {Number} ret     返回状态码（1正确、0错误）
+     * @apiSuccess {String} msg     返回信息（错误描述）
+     * @apiSuccess {Array}  data    模板数组
+     *
+     * [CUSTOM:report-channel] Sprint 7-B Pass 1 · Task 7.5
+     */
+    public function report_template__list()
+    {
+        User::auth();
+        //
+        $scope = trim((string) Request::input('scope', ''));
+        $scopeId = intval(Request::input('scope_id', 0));
+        $includeDisabled = (bool) Request::input('include_disabled', false);
+        //
+        $query = TaskReportTemplate::query();
+        if ($scope === 'global') {
+            $query->where('scope', 'global');
+        } elseif ($scope === 'project') {
+            if ($scopeId <= 0) {
+                return Base::retError('scope=project 必须传 scope_id');
+            }
+            Project::userProject($scopeId);  // 校验项目成员
+            $query->where('scope', 'project')->where('scope_id', $scopeId);
+        } else {
+            // both: global + 用户所在项目的 project scope
+            if ($scopeId > 0) {
+                Project::userProject($scopeId);
+                $query->where(function ($q) use ($scopeId) {
+                    $q->where('scope', 'global')
+                      ->orWhere(function ($q2) use ($scopeId) {
+                          $q2->where('scope', 'project')->where('scope_id', $scopeId);
+                      });
+                });
+            } else {
+                $query->where('scope', 'global');
+            }
+        }
+        //
+        if (!$includeDisabled) {
+            $query->where('enabled', true);
+        }
+        //
+        $templates = $query->orderBy('id')->get();
+        return Base::retSuccess('ok', $templates->toArray());
+    }
+
+    /**
+     * @api {post} api/project/report_template/save 08. 上报模板新建/编辑
+     *
+     * @apiDescription 需要token身份；scope=global 仅管理员；scope=project 须项目负责人；
+     *                 编辑场景下 builtin 模板由 Observer 拒改核心属性。
+     * @apiVersion 1.0.0
+     * @apiGroup project
+     * @apiName report_template__save
+     *
+     * @apiParam {Number}  [id]              编辑场景：模板 ID
+     * @apiParam {String}  scope             global / project
+     * @apiParam {Number}  [scope_id]        scope=project 时 = project_id
+     * @apiParam {String}  name              模板名称
+     * @apiParam {String}  [description]     模板描述
+     * @apiParam {Boolean} [is_default]      是否默认模板
+     * @apiParam {Boolean} [enabled]         是否启用（默认 true）
+     * @apiParam {Array}   [trigger_rules]   触发规则数组 [{event, mode, target, constraint, ...}]
+     *
+     * @apiSuccess {Number} ret     返回状态码（1正确、0错误）
+     * @apiSuccess {String} msg     返回信息（错误描述）
+     * @apiSuccess {Object} data    {template}
+     *
+     * [CUSTOM:report-channel] Sprint 7-B Pass 1 · Task 7.5
+     */
+    public function report_template__save()
+    {
+        $user = User::auth();
+        //
+        $id = intval(Request::input('id', 0));
+        $scope = trim((string) Request::input('scope', 'global'));
+        $scopeId = intval(Request::input('scope_id', 0));
+        $name = trim((string) Request::input('name', ''));
+        $description = trim((string) Request::input('description', ''));
+        $isDefault = (bool) Request::input('is_default', false);
+        $enabled = (bool) Request::input('enabled', true);
+        $triggerRules = Request::input('trigger_rules', []);
+        //
+        if ($name === '') {
+            return Base::retError('name 必填');
+        }
+        if ($id > 0) {
+            // 编辑：以现有模板的 scope/scope_id 做权限校验
+            $tpl = TaskReportTemplate::find($id);
+            if (!$tpl) {
+                return Base::retError('模板不存在');
+            }
+            if ($tpl->scope === 'global' && !$user->isAdmin()) {
+                return Base::retError('global scope 仅管理员可改');
+            }
+            if ($tpl->scope === 'project') {
+                Project::userProject((int) $tpl->scope_id, true, true);  // mustOwner
+            }
+            // 直接属性赋值，绕开 array cast 双编码 bug（Sprint 6 Pass 2 fef67c720 范式）
+            $tpl->name = $name;
+            $tpl->description = $description;
+            $tpl->is_default = $isDefault;
+            $tpl->enabled = $enabled;
+            if (is_array($triggerRules)) {
+                $tpl->trigger_rules = $triggerRules;
+            }
+            $tpl->save();  // Observer 自动校验 84 状态机 + builtin 拒改
+        } else {
+            // 新建
+            if (!in_array($scope, ['global', 'project'], true)) {
+                return Base::retError('scope 非法（仅支持 global/project）');
+            }
+            if ($scope === 'global' && !$user->isAdmin()) {
+                return Base::retError('global scope 仅管理员可改');
+            }
+            if ($scope === 'project') {
+                if ($scopeId <= 0) {
+                    return Base::retError('scope=project 必须传 scope_id');
+                }
+                Project::userProject($scopeId, true, true);  // mustOwner
+            }
+            $tpl = new TaskReportTemplate();
+            $tpl->name = $name;
+            $tpl->scope = $scope;
+            $tpl->scope_id = $scope === 'project' ? $scopeId : 0;
+            $tpl->is_default = $isDefault;
+            $tpl->is_builtin = false;
+            $tpl->description = $description;
+            $tpl->enabled = $enabled;
+            $tpl->trigger_rules = is_array($triggerRules) ? $triggerRules : [];
+            $tpl->save();
+        }
+        return Base::retSuccess('保存成功', ['template' => $tpl->toArray()]);
+    }
+
+    /**
+     * @api {post} api/project/report_template/resolve 09. 解析任务对应模板
+     *
+     * @apiDescription 需要token身份；调 TemplateResolver 4 档优先级查找，附带模板字段列表。
+     *                 供 ReportDialog onCompleteTask 调用（Sprint 3 Task 3.5）。
+     * @apiVersion 1.0.0
+     * @apiGroup project
+     * @apiName report_template__resolve
+     *
+     * @apiParam {Number} task_id 任务 ID
+     *
+     * @apiSuccess {Number} ret     返回状态码（1正确、0错误）
+     * @apiSuccess {String} msg     返回信息（错误描述）
+     * @apiSuccess {Object} data    {template, fields}（无命中时 template=null）
+     *
+     * [CUSTOM:report-channel] Sprint 7-B Pass 1 · Task 7.5
+     */
+    public function report_template__resolve()
+    {
+        User::auth();
+        //
+        $taskId = intval(Request::input('task_id'));
+        if ($taskId <= 0) {
+            return Base::retError('参数错误（task_id）');
+        }
+        $task = ProjectTask::userTask($taskId);
+        Project::userProject((int) $task->project_id);
+        //
+        $tpl = app(TemplateResolver::class)->resolveForTask($task);
+        if (!$tpl) {
+            return Base::retSuccess('ok', ['template' => null, 'fields' => []]);
+        }
+        // 拉模板字段（含 pivot override + sort，供前端 ReportDialog 渲染）
+        $fields = $tpl->templateFields()->with('field')->get()->map(function ($pivot) {
+            $field = $pivot->field;
+            if (!$field) return null;
+            return [
+                'id'            => (int) $field->id,
+                'code'          => $field->code,
+                'name'          => $field->name,
+                'type'          => $field->type,
+                'options'       => $field->options,
+                'required'      => (bool) $field->required,
+                'default_value' => $field->default_value,
+                'sort'          => (int) $pivot->sort,
+                'override'      => $pivot->override,
+            ];
+        })->filter()->values()->toArray();
+        return Base::retSuccess('ok', [
+            'template' => $tpl->toArray(),
+            'fields'   => $fields,
+        ]);
+    }
+
+    /**
+     * @api {post} api/project/report_template/delete 10. 上报模板删除
+     *
+     * @apiDescription 需要token身份；scope=global 仅管理员；scope=project 须项目负责人；
+     *                 builtin global default 由 Observer 拒删。
+     * @apiVersion 1.0.0
+     * @apiGroup project
+     * @apiName report_template__delete
+     *
+     * @apiParam {Number} id 模板 ID
+     *
+     * @apiSuccess {Number} ret     返回状态码（1正确、0错误）
+     * @apiSuccess {String} msg     返回信息（错误描述）
+     * @apiSuccess {Object} data    返回数据
+     *
+     * [CUSTOM:report-channel] Sprint 7-B Pass 1 · Task 7.5
+     */
+    public function report_template__delete()
+    {
+        $user = User::auth();
+        //
+        $id = intval(Request::input('id'));
+        if ($id <= 0) {
+            return Base::retError('id 必填');
+        }
+        $tpl = TaskReportTemplate::find($id);
+        if (!$tpl) {
+            return Base::retError('模板不存在');
+        }
+        // 权限校验（按现有 scope/scope_id 判定）
+        if ($tpl->scope === 'global' && !$user->isAdmin()) {
+            return Base::retError('global scope 仅管理员可删');
+        }
+        if ($tpl->scope === 'project') {
+            Project::userProject((int) $tpl->scope_id, true, true);  // mustOwner
+        }
+        $tpl->delete();  // Observer 自动拒删 builtin global default
+        return Base::retSuccess('删除成功');
+    }
+
+    /**
+     * @api {post} api/project/report_template/clone 11. 上报模板复制
+     *
+     * @apiDescription 需要token身份；可读源模板（scope=global 任何登录用户/scope=project 项目成员）；
+     *                 新建权限 scope=global 仅管理员/scope=project 须项目负责人。
+     *                 不复制 is_default + is_builtin（克隆体强制为 false）。
+     * @apiVersion 1.0.0
+     * @apiGroup project
+     * @apiName report_template__clone
+     *
+     * @apiParam {Number} id                源模板 ID
+     * @apiParam {String} [target_scope]    目标 scope（默认同源）
+     * @apiParam {Number} [target_scope_id] target_scope=project 时 = project_id
+     * @apiParam {String} [name]            新模板名称（默认 "原名 (副本)"）
+     *
+     * @apiSuccess {Number} ret     返回状态码（1正确、0错误）
+     * @apiSuccess {String} msg     返回信息（错误描述）
+     * @apiSuccess {Object} data    {template}
+     *
+     * [CUSTOM:report-channel] Sprint 7-B Pass 1 · Task 7.5
+     */
+    public function report_template__clone()
+    {
+        $user = User::auth();
+        //
+        $id = intval(Request::input('id'));
+        if ($id <= 0) {
+            return Base::retError('id 必填');
+        }
+        $source = TaskReportTemplate::find($id);
+        if (!$source) {
+            return Base::retError('模板不存在');
+        }
+        // 读权限：scope=project 须项目成员；scope=global 任何登录用户
+        if ($source->scope === 'project') {
+            Project::userProject((int) $source->scope_id);
+        }
+        // 新建权限：target_scope=global 仅管理员；target_scope=project 须项目负责人
+        $targetScope = trim((string) Request::input('target_scope', $source->scope));
+        $targetScopeId = intval(Request::input('target_scope_id', $source->scope_id));
+        if (!in_array($targetScope, ['global', 'project'], true)) {
+            return Base::retError('target_scope 非法');
+        }
+        if ($targetScope === 'global' && !$user->isAdmin()) {
+            return Base::retError('clone 到 global scope 仅管理员');
+        }
+        if ($targetScope === 'project') {
+            if ($targetScopeId <= 0) {
+                return Base::retError('target_scope=project 必须传 target_scope_id');
+            }
+            Project::userProject($targetScopeId, true, true);
+        }
+        //
+        $newName = trim((string) Request::input('name', ''));
+        if ($newName === '') {
+            $newName = $source->name . ' (副本)';
+        }
+        // 直接属性赋值绕开 array cast 双编码
+        $clone = new TaskReportTemplate();
+        $clone->name = $newName;
+        $clone->scope = $targetScope;
+        $clone->scope_id = $targetScope === 'project' ? $targetScopeId : 0;
+        $clone->is_default = false;
+        $clone->is_builtin = false;
+        $clone->description = $source->description;
+        $clone->enabled = true;
+        $clone->trigger_rules = is_array($source->trigger_rules) ? $source->trigger_rules : [];
+        $clone->save();
+        // 复制 pivot fields（每行新建直接赋值）
+        foreach ($source->templateFields as $pivot) {
+            $newPivot = new TaskReportTemplateField();
+            $newPivot->template_id = $clone->id;
+            $newPivot->field_id = $pivot->field_id;
+            $newPivot->override = is_array($pivot->override) ? $pivot->override : [];
+            $newPivot->sort = (int) $pivot->sort;
+            $newPivot->save();
+        }
+        return Base::retSuccess('复制成功', ['template' => $clone->fresh()->toArray()]);
+    }
+
+    /**
+     * @api {post} api/project/trigger_log/list 12. 触发日志列表
+     *
+     * @apiDescription 需要token身份；按 task_id / template_id 过滤；
+     *                 task_id 需校验项目成员；不传 task_id 时仅按 template_id 查（管理员视角）。
+     * @apiVersion 1.0.0
+     * @apiGroup project
+     * @apiName trigger_log__list
+     *
+     * @apiParam {Number} [task_id]      任务 ID
+     * @apiParam {Number} [template_id]  模板 ID
+     * @apiParam {Number} [limit]        默认 50，最大 200
+     *
+     * @apiSuccess {Number} ret     返回状态码（1正确、0错误）
+     * @apiSuccess {String} msg     返回信息（错误描述）
+     * @apiSuccess {Array}  data    日志数组
+     *
+     * [CUSTOM:report-channel] Sprint 7-B Pass 1 · Task 7.5
+     */
+    public function trigger_log__list()
+    {
+        User::auth();
+        //
+        $taskId = intval(Request::input('task_id', 0));
+        $templateId = intval(Request::input('template_id', 0));
+        $limit = min(max(intval(Request::input('limit', 50)), 1), 200);
+        //
+        $query = TaskReportTriggerLog::query();
+        if ($taskId > 0) {
+            // task 权限校验（成员可读）
+            $task = ProjectTask::userTask($taskId);
+            Project::userProject((int) $task->project_id);
+            $query->where('task_id', $taskId);
+        }
+        if ($templateId > 0) {
+            $query->where('template_id', $templateId);
+        }
+        $logs = $query->orderBy('triggered_at', 'desc')->limit($limit)->get();
+        return Base::retSuccess('ok', $logs->toArray());
     }
 
 }
