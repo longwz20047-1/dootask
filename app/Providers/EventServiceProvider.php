@@ -70,5 +70,7 @@ class EventServiceProvider extends ServiceProvider
         WebSocketDialogUser::observe(WebSocketDialogUserObserver::class);
         // [CUSTOM:report-channel] Sprint 2 Task 2.1: ProjectTask 生命周期级联同步 TaskReport
         ProjectTask::observe(\App\Observers\TaskReportObserver::class);
+        // [CUSTOM:report-channel] Sprint 6 Task 6.7: TaskReportTemplate 拒删 builtin + 84 状态机校验
+        \App\Models\TaskReportTemplate::observe(\App\Observers\TaskReportTemplateObserver::class);
     }
 }
