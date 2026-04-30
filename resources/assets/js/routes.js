@@ -121,6 +121,12 @@ export default [
                 path: 'application',
                 component: () => import('./pages/manage/application.vue'),
             },
+            // [CUSTOM:report-channel] Sprint 7-D Pass 2 Task 7-D.3
+            {
+                name: 'manage-reports-my-pending',
+                path: 'reports/my-pending',
+                component: () => import('./pages/manage/reports/my-pending.vue'),
+            },
         ]
     },
     {
