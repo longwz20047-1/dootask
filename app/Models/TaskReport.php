@@ -4,7 +4,7 @@
 // Spec §3.5 TaskReport Eloquent Model
 // 注：spec line 1283 含 attachments() / scopeReportVisible() / bootSyncHoursColumn()，
 // Pass 2 暂不实现下列内容（推后到对应 Sprint）：
-//   - attachments()  → Sprint 5a Task 5a.4 同步 TaskFieldAttachment model 后启用
+//   - attachments()  → Sprint 5a Task 5a.4 已启用（关联 TaskFieldAttachment）
 //   - scopeReportVisible() → Sprint 3 Task 3.5（List 路径接入时）
 //   - bootSyncHoursColumn() → §16 P1-V3-3 fallback 决策时
 //   - template_id fillable → Sprint 6 Task 6.4 同步 ALTER 加列后追加
@@ -73,7 +73,14 @@ class TaskReport extends AbstractModel
         return $this->belongsTo(ProjectTask::class, 'task_id', 'id');
     }
 
-    // public function attachments() { ... }  // TODO Sprint 5a Task 5a.4: bind to TaskFieldAttachment
+    /**
+     * 关联：附件（Sprint 5a Task 5a.4 解锁，绑定 TaskFieldAttachment model）
+     * spec §3.3 + §3.5
+     */
+    public function attachments()
+    {
+        return $this->hasMany(TaskFieldAttachment::class, 'report_id', 'id');
+    }
 
     /**
      * Scope: 包含本任务和子任务（parent_id = $taskId）的 reports

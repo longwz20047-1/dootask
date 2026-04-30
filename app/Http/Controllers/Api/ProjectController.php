@@ -48,8 +48,9 @@ use App\Models\ProjectTaskRelation;
 use App\Models\ProjectTaskAiEvent;
 use App\Module\AiTaskSuggestion;
 use App\Observers\ProjectTaskObserver;
-// [CUSTOM:report-channel] Sprint 1 Pass 3
+// [CUSTOM:report-channel] Sprint 1 Pass 3 + Sprint 5a Task 5a.4
 use App\Models\TaskReport;
+use App\Models\TaskFieldAttachment;
 use App\Models\TaskFieldDefinition;
 use App\Services\TaskReport\FieldDefinitionCache;
 use App\Services\TaskReport\FieldValuesValidator;
@@ -4371,6 +4372,104 @@ class ProjectController extends AbstractController
         //
         $fields = $query->orderBy('sort')->orderBy('id')->get();
         return Base::retSuccess('ok', $fields->toArray());
+    }
+
+    /**
+     * @api {post} api/project/report_attachment/upload 06. 上报附件上传
+     *
+     * @apiDescription 需要token身份；调用方须为任务所在项目成员；report_id > 0（上报已存在，先创建上报后再上传附件）
+     * @apiVersion 1.0.0
+     * @apiGroup project
+     * @apiName report_attachment__upload
+     *
+     * @apiParam {Number} task_id        任务 ID（用于权限校验）
+     * @apiParam {Number} report_id      上报 ID（必填；spec §6 attachment 分支：先 save 拿 reportId 再上传）
+     * @apiParam {String} field_code     字段标识符（task_field_definitions.code，type=attachment）
+     * @apiParam {File}   file           上传文件（dootask Base::upload type=file 类型白名单）
+     *
+     * @apiSuccess {Number} ret    返回状态码（1正确、0错误）
+     * @apiSuccess {String} msg    返回信息
+     * @apiSuccess {Object} data   {attachment_id, file_id, filename, size, path, url}
+     *
+     * [CUSTOM:report-channel] Sprint 5a Task 5a.4
+     */
+    public function report_attachment__upload()
+    {
+        $user = User::auth();
+        //
+        $taskId = intval(Request::input('task_id', 0));
+        $reportId = intval(Request::input('report_id', 0));
+        $fieldCode = trim((string) Request::input('field_code', ''));
+        //
+        if ($taskId <= 0) {
+            return Base::retError('参数错误（task_id）');
+        }
+        if ($reportId <= 0) {
+            // spec §6 v3.2 P1-1：附件需先创建上报后再上传
+            return Base::retError('参数错误（report_id 必填，请先创建上报）');
+        }
+        if ($fieldCode === '') {
+            return Base::retError('参数错误（field_code）');
+        }
+        //
+        // 1. 任务存在 + 项目成员校验（与 report__save 一致：手动校验，因 ProjectTask::userTask 还含
+        //    flow / permission / 父子任务级联等额外路径，对 attachment 上传过宽）
+        $task = ProjectTask::whereId($taskId)->whereNull('archived_at')->first();
+        if (!$task) {
+            return Base::retError('任务不存在或已归档');
+        }
+        $project = Project::find($task->project_id);
+        if (!$project) {
+            return Base::retError('项目不存在');
+        }
+        $memberIds = ProjectUser::whereProjectId($project->id)->pluck('userid')->toArray();
+        if (!in_array((int) $user->userid, array_map('intval', $memberIds), true)) {
+            return Base::retError('您不是该项目成员');
+        }
+        //
+        // 2. report 归属校验（防跨任务/跨用户上传越权）
+        $report = TaskReport::whereId($reportId)
+            ->where('task_id', $task->id)
+            ->where('reporter_userid', $user->userid)
+            ->first();
+        if (!$report) {
+            return Base::retError('上报不存在或无权上传');
+        }
+        //
+        // 3. 调用 dootask 既有 Base::upload 走 type=file（含尺寸/类型白名单/MD5 改名/iOS exif 处理）
+        //    返回 {ret:1, msg, data:{name, size(KB), file, path, url, ext, ...}}
+        $upload = Base::upload([
+            'file' => Request::file('file'),
+            'type' => 'file',
+            'path' => 'uploads/task-report/' . $task->id . '/' . date('Ym') . '/',
+        ]);
+        if (Base::isError($upload)) {
+            return $upload;
+        }
+        $info = $upload['data'] ?? [];
+        //
+        // 4. 写 task_field_attachments 行；file_id 自引用 = attachment.id（spec §3.3 软引用、无 FK）
+        $attachment = TaskFieldAttachment::createInstance([
+            'report_id'       => (int) $report->id,
+            'field_code'      => $fieldCode,
+            'file_id'         => 0, // 自引用占位，下面 save 后回填
+            'filename'        => $info['name'] ?? '',
+            'size'            => (int) round(floatval($info['size'] ?? 0) * 1024), // Base::upload size 单位 KB → 转 byte
+            'mime_type'       => Request::file('file') ? Request::file('file')->getClientMimeType() : null,
+            'uploader_userid' => (int) $user->userid,
+        ]);
+        $attachment->save();
+        $attachment->file_id = $attachment->id;
+        $attachment->save();
+        //
+        return Base::retSuccess('上传成功', [
+            'attachment_id' => (int) $attachment->id,
+            'file_id'       => (int) $attachment->file_id,
+            'filename'      => $attachment->filename,
+            'size'          => (int) $attachment->size,
+            'path'          => $info['path'] ?? '',
+            'url'           => $info['url'] ?? '',
+        ]);
     }
 
 }
