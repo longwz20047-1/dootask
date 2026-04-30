@@ -39,10 +39,18 @@ class Sprint7DPass2Test extends TestCase
     private function callController(User $user, string $method, array $input): array
     {
         $this->primeAuth($user);
-        // task__lists 用 TimeRange::parse(timerange)，缺省为 null 时 explode 返 1 元素，
-        // PHP 8 下 $range[1] 抛 "Undefined array key 1"。给个空区间字符串。
-        if (!isset($input['timerange'])) {
-            $input['timerange'] = ',';
+        // task__lists 在 PHP 8 下对未定义键抛 Warning：
+        //   - TimeRange::parse(timerange) → $range[1]
+        //   - $keys['name'] / $keys['tag'] / $keys['status']
+        // 测试时显式传空，避免噪声中断
+        if ($method === 'task__lists') {
+            if (!isset($input['timerange'])) {
+                $input['timerange'] = ',';
+            }
+            $input['keys'] = array_merge(
+                ['name' => '', 'tag' => '', 'status' => ''],
+                (array) ($input['keys'] ?? [])
+            );
         }
         request()->replace($input);
         $controller = new ProjectController();
