@@ -149,6 +149,8 @@ import {mapGetters, mapState} from "vuex";
 import TaskMove from "./TaskMove";
 import Forwarder from "./Forwarder/index.vue";
 import ReportDialog from "../../../components/report/ReportDialog";
+// [CUSTOM:report-channel] Sprint 8 Task 8.7 协助人 try/catch 需要 emit 'reportTriggerModal' 兜底
+import emitter from "../../../store/events";
 
 export default {
     name: "TaskOperation",
@@ -383,8 +385,44 @@ export default {
                                 runDefaultUpdate();
                             })();
                         } else {
-                            // 非 owner 直接走原 updateTask（协助人路径 Sprint 8 处理）
-                            runDefaultUpdate();
+                            // [CUSTOM:report-channel] Sprint 8 Task 8.7 协助人 try/catch
+                            // 协助人完成任务时，server 可能返回 template_block (强制汇报)。
+                            // actions.js 全局 axios catch 已 emit 'reportTriggerModal' 作为主路径，
+                            // 此处显式 emit + Modal.confirm 兜底，并提供 _retryAction 回调。
+                            (async () => {
+                                if (this.updateBefore) {
+                                    completeTemp(true)
+                                }
+                                try {
+                                    await this.updateTask({
+                                        complete_at: $A.daytz().format('YYYY-MM-DD HH:mm:ss'),
+                                    });
+                                    completeTemp(true)
+                                } catch (err) {
+                                    completeTemp(false)
+                                    if (err && err.data && err.data.template_block) {
+                                        // server block: 兜底 emit (actions.js 全局 catch 已 emit，此处幂等)
+                                        emitter.emit('reportTriggerModal', Object.assign({}, err.data.template_block, {
+                                            _hint: err.msg || (err.data.template_block && err.data.template_block._hint) || this.$L('完成任务需先补汇报'),
+                                            _retryAction: () => this.dropTask('complete'),
+                                        }));
+                                    } else if (err && err.ret === -4005 && err.data && err.data.flow_items) {
+                                        // -4005 多结束态弹窗（既有 dootask flow_items 流程）
+                                        this.showFlowItemSelector(err.data.flow_items, 'complete')
+                                    } else if (err) {
+                                        // 其他错误：引导前往"我的待汇报"（spec §11.5.1.6）
+                                        // 注意：updateTask 内部已 $A.modalError，此 confirm 是后续引导步骤
+                                        this.$Modal.confirm({
+                                            title: this.$L('完成失败'),
+                                            content: (err && err.msg) || this.$L('请先补汇报相关任务，是否前往"我的待汇报"？'),
+                                            onOk: () => {
+                                                this.$router.push('/manage/reports/my-pending');
+                                            },
+                                        });
+                                    }
+                                }
+                            })();
+                            return;
                         }
                     }
                     break;
