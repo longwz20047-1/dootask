@@ -132,6 +132,9 @@
             :multiple-max="50"
             :before-submit="onSendTask"
             sender-hidden/>
+
+        <!-- [CUSTOM:report-channel] 完成任务报告 modal -->
+        <ReportDialog ref="reportDialog" />
     </div>
 </template>
 
@@ -139,12 +142,14 @@
 import {mapGetters, mapState} from "vuex";
 import TaskMove from "./TaskMove";
 import Forwarder from "./Forwarder/index.vue";
+import ReportDialog from "../../../components/report/ReportDialog";
 
 export default {
     name: "TaskOperation",
     components: {
         Forwarder,
         TaskMove,
+        ReportDialog,
     },
     data() {
         return {
@@ -307,20 +312,75 @@ export default {
                     if (this.task.complete_at) {
                         return;
                     }
-                    if (this.updateBefore) {
-                        completeTemp(true)
-                    }
-                    this.updateTask({
-                        complete_at: $A.daytz().format('YYYY-MM-DD HH:mm:ss')
-                    }).then(() => {
-                        completeTemp(true)
-                    }).catch((error) => {
-                        completeTemp(false)
-                        // 处理多结束状态的情况
-                        if (error && error.ret === -4005 && error.data?.flow_items) {
-                            this.showFlowItemSelector(error.data.flow_items, 'complete')
+                    // [CUSTOM:report-channel] Sprint 3 Task 3.5: report_template/resolve + ReportDialog modal
+                    // 仅 owner 路径触发 modal；协助人 + flow turn 路径走原 updateTask（Sprint 8 Task 8.7 协助人 try/catch）
+                    {
+                        const isOwner = this.task && this.task.userid === this.$store.state.userId;
+                        const runDefaultUpdate = () => {
+                            if (this.updateBefore) {
+                                completeTemp(true)
+                            }
+                            this.updateTask({
+                                complete_at: $A.daytz().format('YYYY-MM-DD HH:mm:ss')
+                            }).then(() => {
+                                completeTemp(true)
+                            }).catch((error) => {
+                                completeTemp(false)
+                                // 处理多结束状态的情况
+                                if (error && error.ret === -4005 && error.data?.flow_items) {
+                                    this.showFlowItemSelector(error.data.flow_items, 'complete')
+                                }
+                            })
+                        };
+                        if (isOwner) {
+                            (async () => {
+                                try {
+                                    let template = null;
+                                    try {
+                                        const resp = await this.$store.dispatch('call', {
+                                            url: 'project/report_template/resolve',
+                                            data: { task_id: this.task.id },
+                                        });
+                                        template = resp?.data || null;
+                                    } catch (resolveErr) {
+                                        // Sprint 6 才实施 endpoint，Sprint 3 阶段 404 → 静默跳过 modal
+                                        template = null;
+                                    }
+
+                                    const hasModalOnComplete = template?.trigger_rules?.some(rule =>
+                                        rule.event === 'on_complete' && rule.mode === 'modal'
+                                    );
+
+                                    if (hasModalOnComplete) {
+                                        this.$refs.reportDialog.open(this.task, {
+                                            fields: template.fields || null,
+                                            onSubmit: async (values) => {
+                                                // 1. 先 save report
+                                                await this.$store.dispatch('call', {
+                                                    url: 'project/report/save',
+                                                    data: {
+                                                        task_id: this.task.id,
+                                                        values: values,
+                                                    },
+                                                });
+                                                // 2. 再走 updateTask 完成（保留既有 -4005 flow_items catch + Message + loading 等副作用）
+                                                runDefaultUpdate();
+                                            },
+                                        });
+                                        return;  // 等用户在 ReportDialog 提交，不走默认 updateTask
+                                    }
+                                } catch (err) {
+                                    console.warn('[CUSTOM:report-channel] resolve template failed, fallback to updateTask', err);
+                                }
+
+                                // 降级路径：模板无 modal 规则 / 异常 → 原既有 updateTask
+                                runDefaultUpdate();
+                            })();
+                        } else {
+                            // 非 owner 直接走原 updateTask（协助人路径 Sprint 8 处理）
+                            runDefaultUpdate();
                         }
-                    })
+                    }
                     break;
 
                 case 'uncomplete':
