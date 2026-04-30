@@ -17,6 +17,10 @@
             <TabPane :label="$L('上报字段')" name="reportFields">
                 <SystemReportFields v-if="tabAction === 'reportFields'"/>
             </TabPane>
+            <!-- [CUSTOM:report-channel] Sprint 8 Pass 1 · Task 8.1 -->
+            <TabPane :label="$L('上报模板')" name="reportTemplates">
+                <SystemReportTemplates v-if="tabAction === 'reportTemplates'"/>
+            </TabPane>
         </Tabs>
     </div>
 </template>
@@ -28,9 +32,11 @@ import SystemColumnTemplate from "./components/SystemColumnTemplate";
 import SystemFileSetting from "./components/SystemFileSetting";
 // [CUSTOM:report-channel] Sprint 4 Pass 1 · Task 4.1
 import SystemReportFields from "./components/SystemReportFields";
+// [CUSTOM:report-channel] Sprint 8 Pass 1 · Task 8.1
+import SystemReportTemplates from "./components/SystemReportTemplates";
 
 export default {
-    components: {SystemColumnTemplate, SystemTaskPriority, SystemSetting, SystemFileSetting, SystemReportFields},
+    components: {SystemColumnTemplate, SystemTaskPriority, SystemSetting, SystemFileSetting, SystemReportFields, SystemReportTemplates},
     data() {
         return {
             tabAction: 'setting',
