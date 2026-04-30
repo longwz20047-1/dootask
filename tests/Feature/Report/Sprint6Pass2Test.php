@@ -3,6 +3,11 @@
 // [CUSTOM:report-channel]
 // Sprint 6 Pass 2 测试：3 Eloquent Model + Observer + V33 数据迁移命令
 //
+// 注：trigger_rules / override 等 array-cast 字段必须用直接属性赋值（$tpl->trigger_rules = [...]），
+//     不能走 createInstance(array) — 因 AbstractModel::updateInstance 对数组先 json_encode，
+//     再触发 Eloquent array cast 二次 encode，导致读出时为 string（与 dootask 既有
+//     ProjectController::report 写法一致：line 4132 `$report->values = $arr` 直接赋值）。
+//
 // 覆盖：
 //   - TaskReportTemplate cast trigger_rules → array
 //   - Observer 拒删 builtin global default
@@ -27,15 +32,31 @@ class Sprint6Pass2Test extends TestCase
 {
     use DatabaseTransactions;
 
+    /**
+     * 创建 non-builtin TaskReportTemplate 的统一 helper。
+     * 用直接属性赋值绕开 AbstractModel::updateInstance 的 array2json 双编码。
+     */
+    private function makeTemplate(array $attrs): TaskReportTemplate
+    {
+        $tpl = new TaskReportTemplate();
+        $tpl->name        = $attrs['name'] ?? ('Tpl ' . uniqid());
+        $tpl->scope       = $attrs['scope'] ?? 'project';
+        $tpl->scope_id    = $attrs['scope_id'] ?? 9000;
+        $tpl->is_default  = $attrs['is_default'] ?? false;
+        $tpl->is_builtin  = $attrs['is_builtin'] ?? false;
+        $tpl->enabled     = $attrs['enabled'] ?? true;
+        $tpl->description = $attrs['description'] ?? null;
+        if (array_key_exists('trigger_rules', $attrs)) {
+            $tpl->trigger_rules = $attrs['trigger_rules'];
+        }
+        return $tpl;
+    }
+
     public function test_template_model_casts_trigger_rules_to_array()
     {
-        $tpl = TaskReportTemplate::createInstance([
+        $tpl = $this->makeTemplate([
             'name'          => 'Test Template ' . uniqid(),
-            'scope'         => 'project',
             'scope_id'      => 9001,
-            'is_default'    => false,
-            'is_builtin'    => false,
-            'enabled'       => true,
             'trigger_rules' => [['event' => 'on_complete', 'mode' => 'modal']],
         ]);
         $tpl->save();
@@ -61,13 +82,9 @@ class Sprint6Pass2Test extends TestCase
 
     public function test_observer_allows_deleting_non_builtin()
     {
-        $tpl = TaskReportTemplate::createInstance([
+        $tpl = $this->makeTemplate([
             'name'          => 'Disposable ' . uniqid(),
-            'scope'         => 'project',
             'scope_id'      => 9002,
-            'is_default'    => false,
-            'is_builtin'    => false,
-            'enabled'       => true,
             'trigger_rules' => [],
         ]);
         $tpl->save();
@@ -81,13 +98,9 @@ class Sprint6Pass2Test extends TestCase
     {
         $this->expectException(ApiException::class);
         $this->expectExceptionMessage('event 非法');
-        $tpl = TaskReportTemplate::createInstance([
+        $tpl = $this->makeTemplate([
             'name'          => 'Bad Event ' . uniqid(),
-            'scope'         => 'project',
             'scope_id'      => 9003,
-            'is_default'    => false,
-            'is_builtin'    => false,
-            'enabled'       => true,
             'trigger_rules' => [['event' => 'INVALID_EVENT', 'mode' => 'modal']],
         ]);
         $tpl->save();
@@ -97,13 +110,9 @@ class Sprint6Pass2Test extends TestCase
     {
         $this->expectException(ApiException::class);
         $this->expectExceptionMessage('mode 非法');
-        $tpl = TaskReportTemplate::createInstance([
+        $tpl = $this->makeTemplate([
             'name'          => 'Bad Mode ' . uniqid(),
-            'scope'         => 'project',
             'scope_id'      => 9004,
-            'is_default'    => false,
-            'is_builtin'    => false,
-            'enabled'       => true,
             'trigger_rules' => [['event' => 'on_complete', 'mode' => 'INVALID_MODE']],
         ]);
         $tpl->save();
@@ -114,13 +123,9 @@ class Sprint6Pass2Test extends TestCase
         // block 模式仅允许 min_count / time_window；max_count 应被拒
         $this->expectException(ApiException::class);
         $this->expectExceptionMessage('max_count');
-        $tpl = TaskReportTemplate::createInstance([
+        $tpl = $this->makeTemplate([
             'name'          => 'Bad Constraint ' . uniqid(),
-            'scope'         => 'project',
             'scope_id'      => 9005,
-            'is_default'    => false,
-            'is_builtin'    => false,
-            'enabled'       => true,
             'trigger_rules' => [[
                 'event'      => 'on_complete',
                 'mode'       => 'block',
@@ -132,13 +137,9 @@ class Sprint6Pass2Test extends TestCase
 
     public function test_observer_accepts_remind_with_frequency_limit()
     {
-        $tpl = TaskReportTemplate::createInstance([
+        $tpl = $this->makeTemplate([
             'name'          => 'Valid Remind ' . uniqid(),
-            'scope'         => 'project',
             'scope_id'      => 9006,
-            'is_default'    => false,
-            'is_builtin'    => false,
-            'enabled'       => true,
             'trigger_rules' => [[
                 'event'      => 'daily',
                 'mode'       => 'remind',
@@ -151,13 +152,9 @@ class Sprint6Pass2Test extends TestCase
 
     public function test_template_field_pivot_model_works()
     {
-        $tpl = TaskReportTemplate::createInstance([
+        $tpl = $this->makeTemplate([
             'name'          => 'Pivot Test ' . uniqid(),
-            'scope'         => 'project',
             'scope_id'      => 9007,
-            'is_default'    => false,
-            'is_builtin'    => false,
-            'enabled'       => true,
             'trigger_rules' => [],
         ]);
         $tpl->save();
@@ -165,12 +162,12 @@ class Sprint6Pass2Test extends TestCase
         $hours = TaskFieldDefinition::where('code', 'hours')->where('is_builtin', true)->first();
         $this->assertNotNull($hours, 'hours builtin field not seeded');
 
-        $pivot = TaskReportTemplateField::createInstance([
-            'template_id' => $tpl->id,
-            'field_id'    => $hours->id,
-            'override'    => ['hidden' => false, 'required' => true],
-            'sort'        => 1,
-        ]);
+        // 直接属性赋值绕开 updateInstance array2json 双编码
+        $pivot = new TaskReportTemplateField();
+        $pivot->template_id = $tpl->id;
+        $pivot->field_id    = $hours->id;
+        $pivot->override    = ['hidden' => false, 'required' => true];
+        $pivot->sort        = 1;
         $pivot->save();
 
         $fresh = TaskReportTemplateField::find($pivot->id);
@@ -183,28 +180,26 @@ class Sprint6Pass2Test extends TestCase
     public function test_trigger_log_model_dedup_by_unique_constraint()
     {
         $now = now();
-        $log = TaskReportTriggerLog::createInstance([
-            'task_id'      => 999991,
-            'template_id'  => 1,
-            'rule_idx'     => 0,
-            'event'        => 'on_complete',
-            'mode'         => 'block',
-            'triggered_at' => $now,
-            'user_id'      => 1,
-        ]);
+        $log = new TaskReportTriggerLog();
+        $log->task_id      = 999991;
+        $log->template_id  = 1;
+        $log->rule_idx     = 0;
+        $log->event        = 'on_complete';
+        $log->mode         = 'block';
+        $log->triggered_at = $now;
+        $log->user_id      = 1;
         $log->save();
 
         // 同一 5 字段组合（task_id, rule_idx, triggered_at, event, mode）应被 unique 拒
         $this->expectException(\Illuminate\Database\QueryException::class);
-        $dup = TaskReportTriggerLog::createInstance([
-            'task_id'      => 999991,
-            'template_id'  => 1,
-            'rule_idx'     => 0,
-            'event'        => 'on_complete',
-            'mode'         => 'block',
-            'triggered_at' => $now,
-            'user_id'      => 1,
-        ]);
+        $dup = new TaskReportTriggerLog();
+        $dup->task_id      = 999991;
+        $dup->template_id  = 1;
+        $dup->rule_idx     = 0;
+        $dup->event        = 'on_complete';
+        $dup->mode         = 'block';
+        $dup->triggered_at = $now;
+        $dup->user_id      = 1;
         $dup->save();
     }
 
