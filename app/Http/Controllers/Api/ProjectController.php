@@ -4438,10 +4438,22 @@ class ProjectController extends AbstractController
         //
         // 3. 调用 dootask 既有 Base::upload 走 type=file（含尺寸/类型白名单/MD5 改名/iOS exif 处理）
         //    返回 {ret:1, msg, data:{name, size(KB), file, path, url, ext, ...}}
+        //    显式传 PHP 8 strict mode 下 Base::upload() 无条件读的 key（chmod / size /
+        //    saveName / fileName / scale / convertVideo / compressVideo），避免
+        //    "Undefined array key" warning 在 PHPUnit 下转 exception。
         $upload = Base::upload([
-            'file' => Request::file('file'),
-            'type' => 'file',
-            'path' => 'uploads/task-report/' . $task->id . '/' . date('Ym') . '/',
+            'file'           => Request::file('file'),
+            'type'           => 'file',
+            'path'           => 'uploads/task-report/' . $task->id . '/' . date('Ym') . '/',
+            'chmod'          => 0644,
+            'size'           => 0,
+            'saveName'       => false,
+            'fileName'       => '',
+            'scale'          => null,
+            'convertVideo'   => false,
+            'compressVideo'  => false,
+            'quality'        => false,
+            'autoThumb'      => false,
         ]);
         if (Base::isError($upload)) {
             return $upload;
