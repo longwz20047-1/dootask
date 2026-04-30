@@ -23,9 +23,19 @@ namespace App\Observers;
 
 use App\Exceptions\ApiException;
 use App\Models\TaskReportTemplate;
+use App\Services\TaskReport\DashboardCacheInvalidator;
 
 class TaskReportTemplateObserver
 {
+    /**
+     * Sprint 7-A Task 7.3.5: 任意保存（创建/更新）后失效 dashboard_cache
+     * spec §11.8.X
+     */
+    public function saved(TaskReportTemplate $template): void
+    {
+        DashboardCacheInvalidator::flush('template', $template->id);
+    }
+
     /**
      * 拒删 builtin global default（系统种子）
      */

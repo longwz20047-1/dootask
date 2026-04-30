@@ -72,5 +72,8 @@ class EventServiceProvider extends ServiceProvider
         ProjectTask::observe(\App\Observers\TaskReportObserver::class);
         // [CUSTOM:report-channel] Sprint 6 Task 6.7: TaskReportTemplate 拒删 builtin + 84 状态机校验
         \App\Models\TaskReportTemplate::observe(\App\Observers\TaskReportTemplateObserver::class);
+        // [CUSTOM:report-channel] Sprint 7-A Task 7.3.5: dashboard_cache 失效（spec §11.8.X）
+        \App\Models\TaskFieldDefinition::observe(\App\Observers\TaskFieldDefinitionObserver::class);
+        \App\Models\TaskReportTemplateField::observe(\App\Observers\TaskReportTemplateFieldObserver::class);
     }
 }
