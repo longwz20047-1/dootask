@@ -53,11 +53,29 @@
                 <FormItem :label="$L('启用')">
                     <i-switch v-model="form.enabled"/>
                 </FormItem>
-                <FormItem :label="$L('可聚合')">
-                    <i-switch v-model="form.aggregatable"/>
+                <FormItem v-if="form.type" :label="$L('类型配置')">
+                    <OptionsEditorText
+                        v-if="form.type === 'text' || form.type === 'textarea'"
+                        v-model="form.options"/>
+                    <OptionsEditorNumber
+                        v-else-if="form.type === 'number'"
+                        v-model="form.options"/>
+                    <OptionsEditorSelect
+                        v-else-if="form.type === 'select' || form.type === 'multi_select'"
+                        v-model="form.options"
+                        :multiple="form.type === 'multi_select'"/>
+                    <OptionsEditorAttachment
+                        v-else-if="form.type === 'attachment'"
+                        v-model="form.options"/>
+                    <p v-else-if="form.type === 'date'" class="type-config-tip">{{$L('日期类型无额外配置')}}</p>
+                    <p v-else-if="form.type === 'json'" class="type-config-tip">{{$L('JSON 类型无额外配置')}}</p>
                 </FormItem>
-                <FormItem :label="$L('类型配置')">
-                    <p class="type-config-tip">{{$L('Sprint 4 Pass 2 加 OptionsEditor* 子组件')}}</p>
+                <FormItem v-if="form.type" :label="$L('聚合配置')">
+                    <OptionsEditorAggregate
+                        :value="aggregateValue"
+                        :field-type="form.type"
+                        :field-id="form.id"
+                        @input="onAggregateInput"/>
                 </FormItem>
             </Form>
         </Modal>
@@ -65,10 +83,23 @@
 </template>
 
 <script>
-// [CUSTOM:report-channel] Sprint 4 Pass 1 · Task 4.2
+// [CUSTOM:report-channel] Sprint 4 Pass 1 · Task 4.2 + Pass 2 接线
 // 项目级（scope=project）上报字段管理。仅项目负责人可见（ProjectPanel dropdown 已限定 owner-only menu）。
+import OptionsEditorText from "../../../components/report/OptionsEditorText";
+import OptionsEditorNumber from "../../../components/report/OptionsEditorNumber";
+import OptionsEditorSelect from "../../../components/report/OptionsEditorSelect";
+import OptionsEditorAttachment from "../../../components/report/OptionsEditorAttachment";
+import OptionsEditorAggregate from "../../../components/report/OptionsEditorAggregate";
+
 export default {
     name: 'ProjectReportFields',
+    components: {
+        OptionsEditorText,
+        OptionsEditorNumber,
+        OptionsEditorSelect,
+        OptionsEditorAttachment,
+        OptionsEditorAggregate,
+    },
     props: {
         projectId: {
             type: Number,
@@ -121,6 +152,16 @@ export default {
     mounted() {
         this.loadFields();
     },
+    computed: {
+        // [CUSTOM:report-channel] Sprint 4 Pass 2 桥接：Aggregate 三字段映射 form 顶层属性
+        aggregateValue() {
+            return {
+                aggregatable: !!this.form.aggregatable,
+                aggregate_strategy: this.form.aggregate_strategy || 'none',
+                has_index: !!this.form.has_index,
+            };
+        },
+    },
     methods: {
         emptyForm() {
             return {
@@ -135,7 +176,15 @@ export default {
                 sort: 0,
                 enabled: true,
                 aggregatable: false,
+                aggregate_strategy: 'none',
+                has_index: false,
             };
+        },
+        onAggregateInput(v) {
+            // [CUSTOM:report-channel] Sprint 4 Pass 2 桥接回写
+            this.form.aggregatable = v.aggregatable;
+            this.form.aggregate_strategy = v.aggregate_strategy;
+            this.form.has_index = v.has_index;
         },
         loadFields() {
             this.loading = true;
