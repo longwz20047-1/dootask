@@ -359,4 +359,91 @@ class ReportFieldTest extends TestCase
         $this->assertSame(0, $resp['ret']);
         $this->assertStringContainsString('内建字段', $resp['msg']);
     }
+
+    // =====================================================================
+    // [CUSTOM:report-channel] Sprint 5b.2 gap fill — Permission 5 档补缺
+    // 5 档：global-admin / global-non-admin / project-owner / project-member / project-outsider
+    // =====================================================================
+
+    /**
+     * Sprint 5b.2 第 5 档：项目普通成员（非负责人）尝试删除 project scope 字段被拒。
+     * Project::userProject(mustOwner=true) 抛 ApiException。
+     */
+    public function test_project_member_cannot_delete_project_field(): void
+    {
+        $owner = User::factory()->create();
+        $project = Project::factory()->create(['userid' => $owner->userid]);
+        ProjectUser::createInstance([
+            'project_id' => $project->id,
+            'userid'     => $owner->userid,
+            'owner'      => 1,
+        ])->save();
+        $member = User::factory()->create();
+        ProjectUser::createInstance([
+            'project_id' => $project->id,
+            'userid'     => $member->userid,
+            'owner'      => 0,
+        ])->save();
+
+        $field = TaskFieldDefinition::createInstance([
+            'scope'              => 'project',
+            'project_id'         => $project->id,
+            'flow_item_id'       => 0,
+            'code'               => 'proj_member_test',
+            'name'               => '项目字段',
+            'type'               => 'text',
+            'options'            => [],
+            'default_value'      => null,
+            'required'           => false,
+            'sort'               => 10,
+            'enabled'            => true,
+            'is_builtin'         => false,
+            'aggregatable'       => false,
+            'aggregate_strategy' => 'none',
+            'has_index'          => false,
+        ]);
+        $field->save();
+
+        // 非负责人成员 → Project::userProject(mustOwner=true) 抛 ApiException
+        $this->expectException(\App\Exceptions\ApiException::class);
+        $this->callFieldDelete($member, ['id' => $field->id]);
+    }
+
+    /**
+     * Sprint 5b.2 第 5 档（项目外人员）：完全不在项目内的用户删 project field 同样被拒。
+     */
+    public function test_project_outsider_cannot_delete_project_field(): void
+    {
+        $owner = User::factory()->create();
+        $project = Project::factory()->create(['userid' => $owner->userid]);
+        ProjectUser::createInstance([
+            'project_id' => $project->id,
+            'userid'     => $owner->userid,
+            'owner'      => 1,
+        ])->save();
+        $outsider = User::factory()->create();
+
+        $field = TaskFieldDefinition::createInstance([
+            'scope'              => 'project',
+            'project_id'         => $project->id,
+            'flow_item_id'       => 0,
+            'code'               => 'proj_outsider_test',
+            'name'               => '项目字段',
+            'type'               => 'text',
+            'options'            => [],
+            'default_value'      => null,
+            'required'           => false,
+            'sort'               => 10,
+            'enabled'            => true,
+            'is_builtin'         => false,
+            'aggregatable'       => false,
+            'aggregate_strategy' => 'none',
+            'has_index'          => false,
+        ]);
+        $field->save();
+
+        // 项目外用户 → 抛 ApiException
+        $this->expectException(\App\Exceptions\ApiException::class);
+        $this->callFieldDelete($outsider, ['id' => $field->id]);
+    }
 }

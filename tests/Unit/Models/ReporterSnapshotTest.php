@@ -91,4 +91,65 @@ class ReporterSnapshotTest extends TestCase
         $this->assertEquals($reporter->userid, (int) $fresh->reporter_userid);
         $this->assertEquals(6, $fresh->values['hours']);
     }
+
+    // =====================================================================
+    // [CUSTOM:report-channel] Sprint 5b.5 gap fill — 离职用户处置补缺
+    // 既有 3 case 覆盖：reporter_userid 不漂移本身。本节补"下游路径仍可用"。
+    // =====================================================================
+
+    /**
+     * Sprint 5b.5 上报人禁用后，TaskReport->reporter 关联仍可解析到原 user
+     * （不做 disable_at 过滤，否则 list 端点丢字段）。
+     */
+    public function test_reporter_relation_still_resolves_after_user_disabled()
+    {
+        $reporter = User::factory()->create();
+        $task     = ProjectTask::factory()->create();
+
+        $report = TaskReport::factory()->create([
+            'task_id'         => $task->id,
+            'parent_id'       => 0,
+            'project_id'      => $task->project_id,
+            'reporter_userid' => $reporter->userid,
+            'cascade_deleted' => false,
+        ]);
+
+        // 禁用账号
+        $reporter->disable_at = now();
+        $reporter->save();
+
+        // reporter 关联仍能解析到原 user（即使 disable_at 已设）
+        $fresh = $report->fresh();
+        $this->assertNotNull($fresh->reporter);
+        $this->assertEquals($reporter->userid, $fresh->reporter->userid);
+        $this->assertNotNull($fresh->reporter->disable_at);
+    }
+
+    /**
+     * Sprint 5b.5 离职上报人的历史 report 仍可在 forTaskAndChildren scope 查询返回
+     * （不被 reporter disable_at 排除）。
+     */
+    public function test_disabled_reporter_reports_still_returned_by_scope()
+    {
+        $reporter = User::factory()->create();
+        $task     = ProjectTask::factory()->create();
+
+        $report = TaskReport::factory()->create([
+            'task_id'         => $task->id,
+            'parent_id'       => 0,
+            'project_id'      => $task->project_id,
+            'reporter_userid' => $reporter->userid,
+            'cascade_deleted' => false,
+        ]);
+
+        // 离职
+        $reporter->disable_at = now();
+        $reporter->save();
+
+        // scope 查询不应过滤掉离职用户的历史 report
+        $reports = TaskReport::forTaskAndChildren($task->id)->get();
+        $this->assertCount(1, $reports);
+        $this->assertEquals($report->id, $reports->first()->id);
+        $this->assertEquals($reporter->userid, (int) $reports->first()->reporter_userid);
+    }
 }

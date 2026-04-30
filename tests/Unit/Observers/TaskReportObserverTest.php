@@ -163,4 +163,28 @@ class TaskReportObserverTest extends TestCase
         $this->assertNotSoftDeleted('project_task_reports', ['id' => $childReport->id]);
         $this->assertFalse((bool) TaskReport::find($childReport->id)->cascade_deleted);
     }
+
+    // =====================================================================
+    // [CUSTOM:report-channel] Sprint 5b.4 gap fill — moveTask 跨项目级联补缺
+    // =====================================================================
+
+    /**
+     * Sprint 5b.4 同时改 parent_id + project_id（moveTask 跨项目场景）：
+     * 子 report 的 parent_id 与 project_id 同步刷新。
+     */
+    public function test_task_parent_and_project_change_simultaneously_cascade()
+    {
+        ['task' => $task, 'report' => $report] = $this->setupTaskWithReport();
+
+        $newProject = Project::factory()->create();
+        $newParent = ProjectTask::factory()->create(['project_id' => $newProject->id]);
+
+        $task->parent_id = $newParent->id;
+        $task->project_id = $newProject->id;
+        $task->save();
+
+        $fresh = $report->fresh();
+        $this->assertEquals($newParent->id, (int) $fresh->parent_id);
+        $this->assertEquals($newProject->id, (int) $fresh->project_id);
+    }
 }

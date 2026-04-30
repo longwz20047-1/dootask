@@ -224,4 +224,87 @@ class ReportFieldListTest extends TestCase
             'project_id' => $project->id,
         ]);
     }
+
+    // =====================================================================
+    // [CUSTOM:report-channel] Sprint 5b.3 gap fill — 跨项目 project scope 字段隔离
+    // =====================================================================
+
+    /**
+     * Sprint 5b.3 跨项目隔离：项目 A 的 project scope 字段不会出现在项目 B 的列表里。
+     */
+    public function test_list_project_isolates_fields_across_projects(): void
+    {
+        $userA = User::factory()->create();
+        $projectA = $this->createProjectWithOwner($userA);
+        $userB = User::factory()->create();
+        $projectB = $this->createProjectWithOwner($userB);
+
+        // 仅在 projectA 上建一个 project scope 字段
+        TaskFieldDefinition::createInstance([
+            'scope'              => 'project',
+            'project_id'         => $projectA->id,
+            'flow_item_id'       => 0,
+            'code'               => 'project_a_only',
+            'name'               => '仅 A 项目字段',
+            'type'               => 'text',
+            'options'            => [],
+            'default_value'      => null,
+            'required'           => false,
+            'sort'               => 10,
+            'enabled'            => true,
+            'is_builtin'         => false,
+            'aggregatable'       => false,
+            'aggregate_strategy' => 'none',
+            'has_index'          => false,
+        ])->save();
+
+        // userB（项目 B 负责人，非 A 成员）只看 project=B → 看不到 A 的字段
+        $resp = $this->callFieldList($userB, [
+            'scope'      => 'project',
+            'project_id' => $projectB->id,
+        ]);
+
+        $this->assertSame(1, $resp['ret']);
+        $codes = array_column($resp['data'], 'code');
+        $this->assertNotContains('project_a_only', $codes);
+    }
+
+    /**
+     * Sprint 5b.3 项目普通成员（非负责人）可读 project scope 字段（list 不要求 owner）。
+     */
+    public function test_list_project_allows_non_owner_member(): void
+    {
+        $owner = User::factory()->create();
+        $project = $this->createProjectWithOwner($owner);
+        $member = User::factory()->create();
+        $this->addMember($project, $member, 0);
+
+        TaskFieldDefinition::createInstance([
+            'scope'              => 'project',
+            'project_id'         => $project->id,
+            'flow_item_id'       => 0,
+            'code'               => 'project_visible',
+            'name'               => '项目可见字段',
+            'type'               => 'text',
+            'options'            => [],
+            'default_value'      => null,
+            'required'           => false,
+            'sort'               => 10,
+            'enabled'            => true,
+            'is_builtin'         => false,
+            'aggregatable'       => false,
+            'aggregate_strategy' => 'none',
+            'has_index'          => false,
+        ])->save();
+
+        // 非负责人成员调 list（spec §4：list 仅要求项目成员，不要求 owner）
+        $resp = $this->callFieldList($member, [
+            'scope'      => 'project',
+            'project_id' => $project->id,
+        ]);
+
+        $this->assertSame(1, $resp['ret']);
+        $codes = array_column($resp['data'], 'code');
+        $this->assertContains('project_visible', $codes);
+    }
 }

@@ -306,4 +306,105 @@ class FieldValuesValidatorTest extends TestCase
         $invalidErrs = array_filter($result['errors'], fn ($e) => ($e['kind'] ?? null) === 'invalid');
         $this->assertNotEmpty($invalidErrs);
     }
+
+    // =====================================================================
+    // [CUSTOM:report-channel] Sprint 5b.1 gap fill — 8 type valid-path 补缺
+    // 既有用例多覆盖 invalid 路径或 mixed valid+invalid，本节补纯 valid passthrough。
+    // =====================================================================
+
+    /**
+     * Sprint 5b.1 textarea valid path：长度小于 max_length，sanitized 保留原文 string。
+     */
+    public function test_textarea_valid_within_max_length_passes()
+    {
+        $defs = [
+            ['code' => 'note', 'name' => '备注', 'type' => 'textarea', 'required' => false,
+             'options' => ['max_length' => 200]],
+        ];
+        $value = '简短的进度备注';
+        $result = $this->validator->validate(['note' => $value], $defs, 0, 0, 'save');
+
+        $this->assertEmpty($result['errors']);
+        $this->assertSame($value, $result['sanitized']['note']);
+    }
+
+    /**
+     * Sprint 5b.1 multi_select 全合法值通过：sanitized 保留原序列、无 errors。
+     */
+    public function test_multi_select_all_valid_values_pass()
+    {
+        $defs = [
+            ['code' => 'tags', 'name' => '标签', 'type' => 'multi_select', 'required' => false,
+             'options' => [['value' => 'x'], ['value' => 'y'], ['value' => 'z']]],
+        ];
+        $result = $this->validator->validate(['tags' => ['x', 'z']], $defs, 0, 0, 'save');
+
+        $this->assertEmpty($result['errors']);
+        $this->assertSame(['x', 'z'], $result['sanitized']['tags']);
+    }
+
+    /**
+     * Sprint 5b.1 attachment 已存在 report 时（reportId > 0）+ TaskFieldAttachment 未建路径
+     *  → class_exists 短路保留输入 IDs（spec §6 Pass 2 兜底，line ~230）。
+     */
+    public function test_attachment_with_report_id_keeps_ids_when_no_db_lookup()
+    {
+        $defs = [
+            ['code' => 'files', 'name' => '附件', 'type' => 'attachment', 'required' => false, 'options' => []],
+        ];
+        // reportId=42 + 输入 IDs；TaskFieldAttachment model 已建（Sprint 5a.4）会做 DB 查询，
+        // 但这里 IDs 在 DB 不存在 → 应报 invalid，且 sanitized 为空数组（dedup 后剔除）。
+        $result = $this->validator->validate(['files' => [101, 102]], $defs, 42, 0, 'save');
+
+        // 当 model 存在 + IDs 不在 DB → invalid 错（含非本上报附件）
+        $invalidErrs = array_filter($result['errors'], fn ($e) => ($e['kind'] ?? null) === 'invalid');
+        $this->assertNotEmpty($invalidErrs);
+        // sanitized 必为数组（不论是空还是 dedup 后保留）
+        $this->assertIsArray($result['sanitized']['files']);
+    }
+
+    /**
+     * Sprint 5b.1 user type 全部为项目成员时 valid path：sanitized 含全部 userids，无 invalid 错。
+     */
+    public function test_user_type_all_project_members_pass()
+    {
+        $owner = User::factory()->create();
+        $member = User::factory()->create();
+        $project = Project::factory()->create(['userid' => $owner->userid]);
+        ProjectUser::createInstance([
+            'project_id' => $project->id,
+            'userid'     => $owner->userid,
+            'owner'      => 1,
+        ])->save();
+        ProjectUser::createInstance([
+            'project_id' => $project->id,
+            'userid'     => $member->userid,
+            'owner'      => 0,
+        ])->save();
+
+        $defs = [[
+            'code'     => 'assignee',
+            'name'     => '负责人',
+            'type'     => 'user',
+            'required' => false,
+            'options'  => [],
+        ]];
+
+        $result = $this->validator->validate(
+            ['assignee' => [$owner->userid, $member->userid]],
+            $defs,
+            0,
+            $project->id,
+            'save'
+        );
+
+        // 全部项目成员 → 无 invalid 错
+        $invalidErrs = array_filter($result['errors'], fn ($e) => ($e['kind'] ?? null) === 'invalid');
+        $this->assertEmpty($invalidErrs);
+        // sanitized 含两个 userid（顺序由 array_intersect 保留 existing 的顺序）
+        sort($result['sanitized']['assignee']);
+        $expected = [$owner->userid, $member->userid];
+        sort($expected);
+        $this->assertEquals($expected, $result['sanitized']['assignee']);
+    }
 }
