@@ -4441,12 +4441,15 @@ class ProjectController extends AbstractController
         //    显式传 PHP 8 strict mode 下 Base::upload() 无条件读的 key（chmod / size /
         //    saveName / fileName / scale / convertVideo / compressVideo），避免
         //    "Undefined array key" warning 在 PHPUnit 下转 exception。
+        // size 直接传 10240 KB（10 MB）硬上限，绕开 Base::settingFind('system', ...)
+        // 链路（Setting model 在 PHP 8 strict + PHPUnit 下也会触 system_alias 等
+        // undefined-key warning，且测试间 Setting 缓存状态污染）。
         $upload = Base::upload([
             'file'           => Request::file('file'),
             'type'           => 'file',
             'path'           => 'uploads/task-report/' . $task->id . '/' . date('Ym') . '/',
             'chmod'          => 0644,
-            'size'           => 0,
+            'size'           => 10240,
             'saveName'       => false,
             'fileName'       => '',
             'scale'          => null,
