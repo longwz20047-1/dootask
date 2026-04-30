@@ -10,36 +10,27 @@
             :loading="loading"
             size="small"
             stripe/>
-        <!-- ReportTemplateEditor 占位（Sprint 8 Pass 2 实施完整组件） -->
-        <Modal
-            v-model="editorVisible"
-            :title="editorTitle"
-            :mask-closable="false"
-            :width="640">
-            <p class="editor-placeholder-tip">
-                {{$L('Sprint 8 Pass 2 实施 ReportTemplateEditor.vue 完整组件（trigger_rules 编辑器 + 字段绑定）')}}
-            </p>
-            <p class="editor-placeholder-tip">{{$L('当前 form 数据预览：')}}</p>
-            <pre class="editor-placeholder-pre">{{ formPreview }}</pre>
-            <div slot="footer">
-                <Button @click="editorVisible = false">{{$L('关闭')}}</Button>
-            </div>
-        </Modal>
+        <!-- ReportTemplateEditor 完整组件（Sprint 8 Pass 2 替换 Pass 1 占位 Modal） -->
+        <ReportTemplateEditor
+            :visible.sync="editorVisible"
+            :value="form"
+            @saved="onTemplateSaved"/>
     </div>
 </template>
 
 <script>
-// [CUSTOM:report-channel] Sprint 8 Pass 1 · Task 8.1
+// [CUSTOM:report-channel] Sprint 8 Pass 1 · Task 8.1（Pass 2 接入 ReportTemplateEditor）
 // 系统级（scope=global）上报模板管理。仅管理员可见（system.vue 已限定 admin tab）。
-// 完整 ReportTemplateEditor 组件由 Sprint 8 Pass 2 实施；本 Pass 1 仅提供框架 + list/delete/clone。
+import ReportTemplateEditor from "../../../../components/report/ReportTemplateEditor";
+
 export default {
     name: 'SystemReportTemplates',
+    components: { ReportTemplateEditor },
     data() {
         return {
             loading: false,
             templates: [],
             editorVisible: false,
-            editorTitle: '',
             form: this.emptyForm(),
             columns: [
                 {
@@ -100,15 +91,6 @@ export default {
     mounted() {
         this.loadTemplates();
     },
-    computed: {
-        formPreview() {
-            try {
-                return JSON.stringify(this.form, null, 2);
-            } catch (e) {
-                return String(this.form);
-            }
-        },
-    },
     methods: {
         emptyForm() {
             return {
@@ -143,12 +125,14 @@ export default {
         openEditor(template) {
             if (template) {
                 this.form = Object.assign(this.emptyForm(), $A.cloneJSON(template));
-                this.editorTitle = this.$L('编辑模板');
             } else {
                 this.form = this.emptyForm();
-                this.editorTitle = this.$L('新建模板');
             }
             this.editorVisible = true;
+        },
+        onTemplateSaved() {
+            this.editorVisible = false;
+            this.loadTemplates();
         },
         cloneTemplate(template) {
             $A.modalInput({
@@ -202,20 +186,6 @@ export default {
 .system-report-templates {
     .action-bar {
         margin-bottom: 12px;
-    }
-    .editor-placeholder-tip {
-        color: #666;
-        margin: 0 0 8px;
-    }
-    .editor-placeholder-pre {
-        background: #f5f7fa;
-        border: 1px solid #e8eaec;
-        border-radius: 4px;
-        padding: 8px 12px;
-        max-height: 320px;
-        overflow: auto;
-        font-size: 12px;
-        margin: 0;
     }
 }
 </style>
