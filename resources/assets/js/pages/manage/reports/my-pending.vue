@@ -14,8 +14,8 @@
     <div class="my-pending-reports">
         <PageTitle :title="pageTitle"/>
 
-        <!-- 视图切换：待汇报 / 已汇报 / 全部 -->
-        <Tabs v-model="mode" class="mode-tabs" @on-click="loadTasks">
+        <!-- 视图切换：待汇报 / 已汇报 / 全部 (build-tag B7-mode-watch) -->
+        <Tabs v-model="mode" class="mode-tabs">
             <TabPane :label="$L('待汇报')" name="pending"/>
             <TabPane :label="$L('已汇报')" name="reported"/>
             <TabPane :label="$L('全部')" name="all"/>
@@ -160,6 +160,14 @@ export default {
             return map[this.mode] || this.$L('我的待汇报任务');
         },
     },
+    watch: {
+        // 用 watch 替代 Tabs @on-click，避开 view-design Tabs input/on-click 双 emit 顺序的隐患
+        mode(newVal, oldVal) {
+            if (newVal !== oldVal) {
+                this.loadTasks();
+            }
+        },
+    },
     mounted() {
         this.loadProjects();
         this.loadTasks();
@@ -190,6 +198,10 @@ export default {
             this.loading = true;
             try {
                 const data = {mode: this.mode};
+                // 临时排查日志（B7）：用户可在 DevTools Console 看到 mode 真实值
+                if (window && window.console) {
+                    window.console.log('[my-pending] loadTasks mode=', this.mode, 'payload=', data);
+                }
                 if (this.filterProjectId) {
                     data.project_id = this.filterProjectId;
                 }
