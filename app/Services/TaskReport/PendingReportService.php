@@ -36,7 +36,7 @@ use Illuminate\Support\Facades\DB;
 class PendingReportService
 {
     /**
-     * 列出 user 未汇报任务（spec §6.6 v3.22 + v3.26）
+     * 列出 user 任务（spec §6.6 v3.22 + v3.26）
      *
      * @param int         $userid          目标用户 id
      * @param int|null    $projectId       可选项目过滤
@@ -44,6 +44,10 @@ class PendingReportService
      * @param string|null $dateFrom        默认近 14 天
      * @param string|null $dateTo
      * @param bool        $includeArchived 默认 false（不含归档 task）
+     * @param string      $mode            'pending' | 'reported' | 'all'，默认 'pending'
+     *                                     - pending: my_report_count < min_count（待汇报，原行为）
+     *                                     - reported: my_report_count > 0（已汇报历史）
+     *                                     - all: 不做汇报状态过滤
      * @return Collection<ProjectTask>     含 my_report_count + is_urgent + my_role 计算字段
      */
     public function listForUser(
@@ -52,7 +56,8 @@ class PendingReportService
         int $limit = 50,
         ?string $dateFrom = null,
         ?string $dateTo = null,
-        bool $includeArchived = false
+        bool $includeArchived = false,
+        string $mode = 'pending'
     ): Collection {
         // 默认时间窗口：近 14 天
         if (!$dateFrom && !$dateTo) {
@@ -116,12 +121,21 @@ class PendingReportService
             ->get();
 
         // PHP 层 TemplateResolver 评估每 task 的 block on_complete 规则 min_count，
-        // 过滤已满足 reports 的任务（避免 SQL 内 JSON_EXTRACT 全表扫）
+        // 按 mode 过滤（避免 SQL 内 JSON_EXTRACT 全表扫）
         $resolver = app(TemplateResolver::class);
 
-        $pending = $tasks->filter(function ($task) use ($resolver) {
-            $minCount = $this->resolveMinCount($task, $resolver);
-            return ((int) $task->my_report_count) < $minCount;
+        $pending = $tasks->filter(function ($task) use ($resolver, $mode) {
+            $count = (int) $task->my_report_count;
+            switch ($mode) {
+                case 'reported':
+                    return $count > 0;
+                case 'all':
+                    return true;
+                case 'pending':
+                default:
+                    $minCount = $this->resolveMinCount($task, $resolver);
+                    return $count < $minCount;
+            }
         })->take($limit);
 
         // 计算字段：is_urgent + my_role

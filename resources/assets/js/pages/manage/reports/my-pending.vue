@@ -12,7 +12,14 @@
 -->
 <template>
     <div class="my-pending-reports">
-        <PageTitle :title="$L('我的待汇报任务')"/>
+        <PageTitle :title="pageTitle"/>
+
+        <!-- 视图切换：待汇报 / 已汇报 / 全部 -->
+        <Tabs v-model="mode" class="mode-tabs" @on-click="loadTasks">
+            <TabPane :label="$L('待汇报')" name="pending"/>
+            <TabPane :label="$L('已汇报')" name="reported"/>
+            <TabPane :label="$L('全部')" name="all"/>
+        </Tabs>
 
         <!-- 筛选条 -->
         <Form class="filter-bar" inline :label-width="80" @submit.native.prevent>
@@ -63,6 +70,7 @@ export default {
     data() {
         return {
             loading: false,
+            mode: 'pending',        // 'pending' | 'reported' | 'all'
             tasks: [],
             projectList: [],
             filterProjectId: null,
@@ -83,6 +91,25 @@ export default {
                         }
                         children.push(h('span', p.row.name));
                         return h('div', children);
+                    },
+                },
+                {
+                    title: this.$L('任务状态'),
+                    key: 'flow_item_name',
+                    width: 130,
+                    render: (h, p) => {
+                        // dootask 标准：flow_item_name 格式 "status|name|color"，
+                        // 缺省时退化按 complete_at 显示已完成/未完成
+                        const wf = $A.convertWorkflow({
+                            flow_item_name: p.row.flow_item_name || '',
+                            complete_at: p.row.complete_at || '',
+                        });
+                        const label = wf.name || (p.row.complete_at ? this.$L('已完成') : this.$L('未完成'));
+                        const color = wf.color || (p.row.complete_at ? '#19be6b' : '#909399');
+                        return h('Tag', {
+                            props: {color: 'default', size: 'small'},
+                            style: {color, borderColor: color},
+                        }, label);
                     },
                 },
                 {
@@ -118,10 +145,20 @@ export default {
                     render: (h, p) => h('Button', {
                         props: {type: 'primary', size: 'small'},
                         on: {click: () => this.reportTask(p.row)},
-                    }, this.$L('汇报')),
+                    }, this.reportButtonLabel(p.row)),
                 },
             ],
         };
+    },
+    computed: {
+        pageTitle() {
+            const map = {
+                pending:  this.$L('我的待汇报任务'),
+                reported: this.$L('我的已汇报任务'),
+                all:      this.$L('我的任务（汇报）'),
+            };
+            return map[this.mode] || this.$L('我的待汇报任务');
+        },
     },
     mounted() {
         this.loadProjects();
@@ -152,7 +189,7 @@ export default {
         async loadTasks() {
             this.loading = true;
             try {
-                const data = {};
+                const data = {mode: this.mode};
                 if (this.filterProjectId) {
                     data.project_id = this.filterProjectId;
                 }
@@ -176,6 +213,14 @@ export default {
             }
         },
 
+        reportButtonLabel(row) {
+            // reported 视图：已汇报过 → 「再次汇报」；其余路径默认「汇报」
+            if (this.mode === 'reported' || (row && Number(row.my_report_count) > 0)) {
+                return this.$L('再次汇报');
+            }
+            return this.$L('汇报');
+        },
+
         onDateChange(val) {
             this.dateRange = val || [];
             this.loadTasks();
@@ -192,6 +237,9 @@ export default {
 <style lang="scss" scoped>
 .my-pending-reports {
     padding: 16px;
+    .mode-tabs {
+        margin-bottom: 8px;
+    }
     .filter-bar {
         margin-bottom: 16px;
     }

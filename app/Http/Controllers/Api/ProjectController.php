@@ -5345,7 +5345,7 @@ class ProjectController extends AbstractController
     }
 
     /**
-     * @api {post} /api/project/report/pending_list 15. 我的未汇报任务列表
+     * @api {post} /api/project/report/pending_list 15. 我的任务汇报列表
      *
      * @apiVersion 1.0.0
      * @apiGroup project
@@ -5357,10 +5357,14 @@ class ProjectController extends AbstractController
      * @apiParam {String} [date_to]           任务创建时间上限
      * @apiParam {Boolean} [include_archived] 含归档任务（默认 false）
      * @apiParam {Number} [limit]             默认 50，最大 100
+     * @apiParam {String} [mode]              pending（默认）/ reported / all
+     *                                        - pending: my_report_count < min_count（待汇报）
+     *                                        - reported: my_report_count > 0（已汇报历史）
+     *                                        - all: 不做汇报状态过滤
      *
      * 权限：默认查自己的；admin 可查他人。指定 project_id 时校验项目成员。
      *
-     * [CUSTOM:report-channel] Sprint 7-D Pass 1 Task 7-D.1
+     * [CUSTOM:report-channel] Sprint 7-D Pass 1 Task 7-D.1（mode 参数：plan v1.12 B4）
      */
     public function report__pending_list()
     {
@@ -5377,6 +5381,11 @@ class ProjectController extends AbstractController
         $dateTo = trim((string) Request::input('date_to', ''));
         $includeArchived = (bool) Request::input('include_archived', false);
         $limit = min(intval(Request::input('limit', 50)) ?: 50, 100);
+        // 视图模式（白名单兜底，未知值降级为 pending 保持兼容）
+        $mode = trim((string) Request::input('mode', 'pending'));
+        if (!in_array($mode, ['pending', 'reported', 'all'], true)) {
+            $mode = 'pending';
+        }
 
         // 项目存在校验（如指定）：当前调用者必须是项目成员
         if ($projectId) {
@@ -5390,7 +5399,8 @@ class ProjectController extends AbstractController
                 $limit,
                 $dateFrom !== '' ? $dateFrom : null,
                 $dateTo !== '' ? $dateTo : null,
-                $includeArchived
+                $includeArchived,
+                $mode
             );
 
         return Base::retSuccess('ok', $tasks->toArray());
