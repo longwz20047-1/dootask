@@ -375,6 +375,100 @@ class Sprint11UserStoriesTest extends TestCase
     }
 
     // ======================================================================
+    // Story 17: trigger remind collaborators 推送（Sprint 12 buffer 补足）
+    // ======================================================================
+
+    /**
+     * 用户故事 17: target=collaborators + mode=remind 触发后，wecom_notifications outbox 写行
+     *
+     * Sprint 12 buffer: Sprint 11 推后 11 故事中 backend 可独立验证的一项
+     *   - TriggerEngine::pushRemind 走 v2.6 M1 outbox 链路（spec §21.2 v3.4 P0-2）
+     *   - WecomMarkdownRenderer::renderReportRemind 渲染 markdown（Sprint 5a Task 5a.6）
+     *   - target=collaborators 含 owner=1 + owner=0 全部 task users（v3.22 明示）
+     *   - 仅有 active UserWecomBinding 的 user 入 outbox（spec §11 R9）
+     */
+    public function test_story_17_trigger_remind_collaborators_pushes_to_outbox()
+    {
+        $owner = User::factory()->create();
+        $col   = User::factory()->create();
+        $task  = ProjectTask::factory()->create(['userid' => $owner->userid]);
+
+        // 建 task users（含 owner + 协助人）
+        ProjectTaskUser::createInstance([
+            'task_id' => $task->id,
+            'userid'  => $owner->userid,
+            'owner'   => 1,
+        ])->save();
+        ProjectTaskUser::createInstance([
+            'task_id' => $task->id,
+            'userid'  => $col->userid,
+            'owner'   => 0,
+        ])->save();
+
+        // 建 active binding（无 binding 则 pushRemind 跳过 — spec §11 R9）
+        DB::table('user_wecom_bindings')->insert([
+            [
+                'userid'        => $owner->userid,
+                'wecom_corp_id' => 'test_corp_' . uniqid(),
+                'wecom_userid'  => 'test_owner_' . uniqid(),
+                'created_at'    => now(),
+                'updated_at'    => now(),
+            ],
+            [
+                'userid'        => $col->userid,
+                'wecom_corp_id' => 'test_corp_' . uniqid(),
+                'wecom_userid'  => 'test_col_' . uniqid(),
+                'created_at'    => now(),
+                'updated_at'    => now(),
+            ],
+        ]);
+
+        $tpl = $this->createTemplate([
+            'trigger_rules' => [
+                [
+                    'event'      => 'on_complete',
+                    'mode'       => 'remind',
+                    'target'     => 'collaborators',
+                    'constraint' => [],
+                    '_hint'      => '请尽快上报',
+                ],
+            ],
+        ]);
+        $this->makeGlobalDefault($tpl);
+
+        // 记当前 outbox 基线（DatabaseTransactions 隔离不保证清表）
+        $countBefore = DB::table('wecom_notifications')
+            ->where('task_id', $task->id)
+            ->count();
+
+        // owner 完成任务（auth 设为 owner，在 collaborators 中）
+        $this->primeAuth($owner);
+        app(TriggerEngine::class)->handle('on_complete', $task);
+
+        // collaborators = owner + col → 2 行 outbox（每个 active binding user 1 行）
+        $countAfter = DB::table('wecom_notifications')
+            ->where('task_id', $task->id)
+            ->count();
+        $this->assertEquals(
+            $countBefore + 2,
+            $countAfter,
+            'target=collaborators 含 owner+col 各 1 行（spec §21.2 v3.22）'
+        );
+
+        // 验证 rendered_markdown 非空（renderReportRemind 已渲染 — spec §10A）
+        $rows = DB::table('wecom_notifications')
+            ->where('task_id', $task->id)
+            ->where('event_type', 'report_remind')
+            ->get();
+        $this->assertCount(2, $rows);
+        foreach ($rows as $row) {
+            $this->assertNotEmpty($row->rendered_markdown, 'rendered_markdown 应由 WecomMarkdownRenderer 填充');
+            $this->assertEquals('pending', $row->status);
+            $this->assertContains((int) $row->target_userid, [$owner->userid, $col->userid]);
+        }
+    }
+
+    // ======================================================================
     // Helpers
     // ======================================================================
 
