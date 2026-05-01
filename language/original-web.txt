@@ -2450,3 +2450,5 @@ localStorage 不可用，看板未持久化
 看板名称
 如: 本月工时
 看板配置保存到浏览器本地（localStorage），切换浏览器/清除缓存会丢失。后端持久化待 Sprint 10 dashboard_charts 表实施
+我的待汇报
+上报仪表盘

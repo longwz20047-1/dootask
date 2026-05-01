@@ -253,7 +253,10 @@
         background-image: url("../images/application/meeting-join.svg");
     }
 
-    &.report {
+    // [CUSTOM:report-channel] my-pending-reports / reports-dashboard 复用 report.svg
+    &.report,
+    &.my-pending-reports,
+    &.reports-dashboard {
         background-image: url("../images/application/report.svg");
     }
 

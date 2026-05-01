@@ -547,6 +547,9 @@ export default {
                 {value: "favorite", label: "我的收藏", sort: 45},
                 {value: "recent", label: "最近打开", sort: 47},
                 {value: "report", label: "工作报告", sort: 50},
+                // [CUSTOM:report-channel] Sprint 7-D + Sprint 9 入口卡片（applyClick switch 同步追加 case）
+                {value: "myPendingReports", label: "我的待汇报", sort: 51},
+                {value: "reportsDashboard", label: "上报仪表盘", sort: 52, show: this.userIsAdmin},
                 {value: "mybot", label: "我的机器人", sort: 55},
                 {value: "signin", label: "签到打卡", sort: 70},
                 {value: "meeting", label: "在线会议", sort: 80},
@@ -1056,6 +1059,12 @@ export default {
                     break;
                 case 'report':
                     emitter.emit('openReport', params == 'badge' ? 'receive' : 'my');
+                    break;
+                case 'myPendingReports':
+                    this.goForward({name: 'manage-reports-my-pending'});
+                    break;
+                case 'reportsDashboard':
+                    this.goForward({name: 'manage-reports-dashboard'});
                     break;
                 case 'favorite':
                     emitter.emit('openFavorite');
