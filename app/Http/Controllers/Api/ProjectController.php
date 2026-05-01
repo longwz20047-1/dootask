@@ -5403,7 +5403,8 @@ class ProjectController extends AbstractController
                 $mode
             );
 
-        return Base::retSuccess('ok', $tasks->toArray());
+        // 临时排查（B7）：把后端实际收到的 mode 暴露在 msg 里，用户在 Network 面板可见
+        return Base::retSuccess('ok[mode=' . $mode . ']', $tasks->toArray());
     }
 
 }
