@@ -4830,6 +4830,95 @@ class ProjectController extends AbstractController
     }
 
     /**
+     * @api {post} api/project/report_template/sync_fields 10b. 模板字段引用批量同步
+     *
+     * @apiDescription 需要token身份；scope=global 仅管理员；scope=project 须项目负责人；
+     *                 builtin global default 模板的字段引用不可改（保护内置 hours+note 兜底）。
+     *                 事务内"全删 → 全插" pivot 行；TaskReportTemplateFieldObserver 自动失效 dashboard_cache。
+     *                 与 ReportTemplateEditor.vue 字段引用 Tab 配套（Sprint 8 Pass 2 闭环）。
+     * @apiVersion 1.0.0
+     * @apiGroup project
+     * @apiName report_template__sync_fields
+     *
+     * @apiParam {Number}   template_id     模板 ID
+     * @apiParam {Object[]} fields          [{field_id, override?:Object, sort?:Number}]
+     *
+     * @apiSuccess {Number} ret     返回状态码（1正确、0错误）
+     * @apiSuccess {String} msg     返回信息（错误描述）
+     * @apiSuccess {Object} data    {fields:[{id,code,name,type,options,required,default_value,sort,override}]}
+     *
+     * [CUSTOM:report-channel] Sprint 8 Pass 2 字段引用持久化（plan v1.12 B2 闭环）
+     */
+    public function report_template__sync_fields()
+    {
+        $user = User::auth();
+        //
+        $tplId  = intval(Request::input('template_id', 0));
+        $fields = Request::input('fields', []);
+        if ($tplId <= 0) {
+            return Base::retError('template_id 必填');
+        }
+        if (!is_array($fields)) {
+            return Base::retError('fields 必须为数组');
+        }
+        $tpl = TaskReportTemplate::find($tplId);
+        if (!$tpl) {
+            return Base::retError('模板不存在');
+        }
+        // 权限校验：与 save/delete 一致
+        if ($tpl->scope === 'global' && !$user->isAdmin()) {
+            return Base::retError('global scope 仅管理员可改');
+        }
+        if ($tpl->scope === 'project') {
+            Project::userProject((int) $tpl->scope_id, true, true);  // mustOwner
+        }
+        // builtin global default 字段引用保护（防止破坏内置 hours+note 兜底）
+        if ($tpl->is_builtin && $tpl->scope === 'global' && $tpl->is_default) {
+            return Base::retError('内置默认模板的字段引用不可修改');
+        }
+        //
+        DB::transaction(function () use ($tplId, $fields) {
+            // 全删 → 全插（Observer saved/deleted 自动失效 dashboard_cache template_id 维度）
+            TaskReportTemplateField::where('template_id', $tplId)->delete();
+            foreach ($fields as $idx => $f) {
+                $fieldId = intval($f['field_id'] ?? 0);
+                if ($fieldId <= 0) {
+                    continue;
+                }
+                // 直接属性赋值，绕开 AbstractModel::updateInstance array→json 双编码 bug
+                // （Sprint 6 Pass 2 fef67c720 范式）
+                $pivot = new TaskReportTemplateField();
+                $pivot->template_id = $tplId;
+                $pivot->field_id    = $fieldId;
+                $pivot->override    = is_array($f['override'] ?? null) ? $f['override'] : [];
+                $pivot->sort        = intval($f['sort'] ?? ($idx + 1));
+                $pivot->save();
+            }
+        });
+        // 返回新字段列表（同 resolve 接口 shape，前端可即时更新本地 form.fields）
+        $pivots = TaskReportTemplateField::where('template_id', $tplId)
+            ->orderBy('sort')->orderBy('id')->with('field')->get();
+        $out = $pivots->map(function ($pivot) {
+            $field = $pivot->field;
+            if (!$field) {
+                return null;
+            }
+            return [
+                'id'            => (int) $field->id,
+                'code'          => $field->code,
+                'name'          => $field->name,
+                'type'          => $field->type,
+                'options'       => $field->options,
+                'required'      => (bool) $field->required,
+                'default_value' => $field->default_value,
+                'sort'          => (int) $pivot->sort,
+                'override'      => $pivot->override,
+            ];
+        })->filter()->values()->toArray();
+        return Base::retSuccess('字段引用同步成功', ['fields' => $out]);
+    }
+
+    /**
      * @api {post} api/project/report_template/clone 11. 上报模板复制
      *
      * @apiDescription 需要token身份；可读源模板（scope=global 任何登录用户/scope=project 项目成员）；

@@ -575,6 +575,9 @@ class ProjectTask extends AbstractModel
             }
         }
 
+        // [CUSTOM:report-channel] spec §3.9bis：v3.26 4-tier 第一槽（task.template_id）
+        // template_id 是 nullable bigint，0 → null 兼容（migration 见 2026_04_29_100001）
+        $templateId = intval($data['template_id'] ?? 0) ?: null;
         $task = self::createInstance([
             'parent_id' => $parent_id,
             'project_id' => $project_id,
@@ -582,7 +585,8 @@ class ProjectTask extends AbstractModel
             'p_level' => $p_level,
             'p_name' => $p_name,
             'p_color' => $p_color,
-            'visibility' => $visibility ?: 1
+            'visibility' => $visibility ?: 1,
+            'template_id' => $templateId,
         ]);
         if ($content) {
             $task->desc = self::generateDesc($content);
@@ -865,6 +869,14 @@ class ProjectTask extends AbstractModel
                 $this->name = $data['name'];
                 if ($this->dialog_id) {
                     WebSocketDialog::updateData(['id' => $this->dialog_id], ['name' => $this->name]);
+                }
+            }
+            // [CUSTOM:report-channel] spec §3.9bis：4-tier 第一槽 task.template_id
+            // 主任务+子任务都允许有独立 template_id；0/空 → null
+            if (Arr::exists($data, 'template_id')) {
+                $newTplId = intval($data['template_id']) ?: null;
+                if ($this->template_id != $newTplId) {
+                    $this->template_id = $newTplId;
                 }
             }
             // 负责人

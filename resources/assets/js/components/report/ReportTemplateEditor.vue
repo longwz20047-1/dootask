@@ -210,7 +210,7 @@
 // 与后端契约：
 //   - target ∈ {reporter, collaborators, assignees}（单选 string，非数组）
 //   - constraint allowed keys: block→[min_count,time_window] / modal→[_hint] / remind→[frequency_limit_min,time_window,_hint]
-//   - 后端 save 仅吃 trigger_rules 数组（不收 fields）；template_fields pivot 持久化降级（spec §11.7 v3.4 注：批量 endpoint 留 Sprint 9 后端补）
+//   - 后端 save 吃 trigger_rules 数组；字段引用走独立端点 report_template/sync_fields（plan v1.12 B2 闭环）
 import Draggable from 'vuedraggable';
 
 const EVENTS = ['on_complete', 'on_start', 'on_status_change', 'on_flow_change', 'daily', 'weekly', 'manual'];
@@ -459,10 +459,41 @@ export default {
                     data: payload,
                 });
                 const saved = (resp && resp.data && resp.data.template) || null;
+                const tplId = (saved && saved.id) || this.form.id;
+                // 同步字段引用（plan v1.12 B2 闭环）
+                // - builtin global default 模板后端会返 retError，前端忽略以不阻塞模板本身保存
+                // - 仅当 tplId>0（save 成功 / 编辑路径）才调，否则跳过
+                let syncedFields = null;
+                if (tplId > 0) {
+                    try {
+                        const fieldsPayload = (this.form.fields || []).map((link, idx) => ({
+                            field_id: link.field_id,
+                            sort: idx + 1,
+                            override: link.override_enabled
+                                ? {
+                                    hidden: !!(link.override && link.override.hidden),
+                                    required_override: link.override ? link.override.required_override : null,
+                                    default_value: link.override ? link.override.default_value : null,
+                                }
+                                : {},
+                        })).filter(item => item.field_id);
+                        const syncResp = await this.$store.dispatch('call', {
+                            url: 'project/report_template/sync_fields',
+                            method: 'post',
+                            data: { template_id: tplId, fields: fieldsPayload },
+                        });
+                        syncedFields = (syncResp && syncResp.data && syncResp.data.fields) || null;
+                    } catch (syncErr) {
+                        // 字段同步失败不阻塞模板保存（例如 builtin 模板限制）；仅提示
+                        $A.messageWarning((syncErr && syncErr.msg) || this.$L('字段引用同步失败'));
+                    }
+                }
                 $A.messageSuccess(this.$L('保存成功'));
-                // 注意：template_fields pivot 持久化降级到 Sprint 9（后端无 batch endpoint）。
-                // 本组件只保存 template 本身 + trigger_rules。
-                this.$emit('saved', saved || Object.assign({}, this.form));
+                const emitPayload = saved || Object.assign({}, this.form);
+                if (syncedFields) {
+                    emitPayload.fields = syncedFields;
+                }
+                this.$emit('saved', emitPayload);
                 this.closeModal();
             } catch (err) {
                 $A.modalError((err && err.msg) || this.$L('保存失败'));
