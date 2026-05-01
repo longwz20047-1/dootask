@@ -195,7 +195,7 @@ export default {
     .filter-bar {
         margin-bottom: 16px;
     }
-    /deep/ .task-urgent-row td {
+    ::v-deep .task-urgent-row td {
         background-color: #fff5f5;
     }
 }
