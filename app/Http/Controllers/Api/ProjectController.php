@@ -3998,6 +3998,43 @@ class ProjectController extends AbstractController
     }
 
     /**
+     * @api {get} api/project/tag/used 项目实际在用的标签列表
+     *
+     * @apiDescription 需要token身份。返回 ProjectTaskTag 关联表 GROUP BY (name, color)
+     *                 ——即"实际有任务挂着的标签"，不是 ProjectTag 定义表。
+     *                 适用场景：LLM 通过 MCP 直写 task_tag 不维护 ProjectTag 库时，仍能拿到真实在用的标签做语义匹配。
+     * @apiVersion 1.0.0
+     * @apiGroup project
+     * @apiName tag__used
+     *
+     * @apiParam {Number} project_id        项目ID
+     *
+     * @apiSuccess {Number} ret     返回状态码（1正确、0错误）
+     * @apiSuccess {String} msg     返回信息
+     * @apiSuccess {Array}  data    [{name, color, task_count}]
+     *
+     * [CUSTOM:tag-used] LLM 直写场景的标签真实数据源
+     */
+    public function tag__used()
+    {
+        User::auth();
+        //
+        $projectId = intval(Request::input('project_id'));
+        if ($projectId <= 0) {
+            return Base::retError('项目ID必填');
+        }
+        Project::userProject($projectId);  // 项目成员校验
+        //
+        $tags = ProjectTaskTag::where('project_id', $projectId)
+            ->select('name', 'color', DB::raw('COUNT(*) as task_count'))
+            ->groupBy('name', 'color')
+            ->orderByDesc('task_count')
+            ->get();
+        //
+        return Base::retSuccess('success', $tags->toArray());
+    }
+
+    /**
      * @api {post} api/project/task/ai_apply 采纳AI建议
      *
      * @apiDescription 标记AI建议为已采纳，返回建议数据供前端调用相应业务接口处理
