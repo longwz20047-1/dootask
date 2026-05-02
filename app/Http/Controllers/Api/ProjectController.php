@@ -1100,6 +1100,15 @@ class ProjectController extends AbstractController
                 $query->where('project_task_tags.name', $keys['tag']);
             });
         }
+        if (isset($keys['column_id']) && $keys['column_id']) {
+            // 兼容单值与数组；intval 防注入；空数组退化为不过滤（不报错）
+            $columnIds = is_array($keys['column_id'])
+                ? array_filter(array_map('intval', $keys['column_id']), fn($v) => $v > 0)
+                : (intval($keys['column_id']) > 0 ? [intval($keys['column_id'])] : []);
+            if (!empty($columnIds)) {
+                $builder->whereIn('project_tasks.column_id', $columnIds);
+            }
+        }
         if ($keys['status']) {
             if ($keys['status'] == 'completed') {
                 $builder->whereNotNull('project_tasks.complete_at');
