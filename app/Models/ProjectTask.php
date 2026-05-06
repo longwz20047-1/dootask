@@ -654,7 +654,7 @@ class ProjectTask extends AbstractModel
             }
         }
         //
-        return AbstractModel::transaction(function () use ($assist, $times, $subtasks, $content, $owner, $task, $visibility_userids) {
+        return AbstractModel::transaction(function () use ($assist, $times, $subtasks, $content, $owner, $task, $visibility_userids, $data) {
             $task->save();
             $owner = array_values(array_unique($owner));
             foreach ($owner as $uid) {
@@ -697,6 +697,40 @@ class ProjectTask extends AbstractModel
                     ],
                 ])->save();
             }
+            // 任务标签（task_tag）
+            // [CUSTOM:task-tag-add] 修复 addTask 不处理 task_tag 字段的 bug：
+            // dootask 原版 task__add API 文档承诺接受 [task_tag]（ProjectController.php:2658
+            // @apiParam），但 addTask 实际实现完全没处理该字段——LLM 通过 MCP 直写 task_tag
+            // 时被静默丢弃。本块复用 updateTask line 1152-1206 「新增分支」逻辑，
+            // 直接 INSERT 到 pre_project_task_tags（不依赖 ProjectTag 标签库，
+            // 因为 task_tag 表 schema 自闭合，与 ProjectTag 完全解耦）。
+            // 子任务也支持（updateTask 处理 task_tag 时也无 parent_id 限制；DB 层无约束）。
+            if (Arr::exists($data, 'task_tag') && is_array($data['task_tag'])) {
+                $newTags = collect($data['task_tag']);
+                $insertedNames = [];
+                foreach ($newTags as $tag) {
+                    if (!is_array($tag) || empty($tag['name']) || empty($tag['color'])) {
+                        continue;
+                    }
+                    // 同 task 内 name 去重（避免 LLM 误传重复）
+                    if (in_array($tag['name'], $insertedNames, true)) {
+                        continue;
+                    }
+                    ProjectTaskTag::createInstance([
+                        'project_id' => $task->project_id,
+                        'task_id'    => $task->id,
+                        'name'       => $tag['name'],
+                        'color'      => $tag['color'],
+                    ])->save();
+                    $insertedNames[] = $tag['name'];
+                }
+                if (!empty($insertedNames)) {
+                    $task->addLog("新增{任务}标签", [
+                        'tags' => $newTags->values()->all()
+                    ]);
+                }
+            }
+
             if ($task->parent_id == 0 && $subtasks && is_array($subtasks)) {
                 foreach ($subtasks as $subtask) {
                     list($start, $end) = is_string($subtask['times']) ? explode(",", $subtask['times']) : (is_array($subtask['times']) ? $subtask['times'] : []);
