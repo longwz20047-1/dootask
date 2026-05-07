@@ -5453,4 +5453,86 @@ class ProjectController extends AbstractController
         return Base::retSuccess('ok[mode=' . $mode . ']', $tasks->toArray());
     }
 
+    /**
+     * @api {post} /api/project/report/list_by_task 16. 按任务查汇报记录
+     *
+     * @apiVersion 1.0.0
+     * @apiGroup project
+     * @apiName report__list_by_task
+     *
+     * @apiDescription 根据 task_id 查询该任务下所有 TaskReport 记录（含字段值/上报人/日期）。
+     *                 用于 MCP get_task 详情串联展示 + 任务汇报历史回溯。
+     *
+     * @apiParam {Number} task_id            任务 ID
+     * @apiParam {Boolean} [include_children] 是否包含子任务的 reports（默认 false）
+     * @apiParam {Number} [page]             页码，默认 1
+     * @apiParam {Number} [pagesize]         每页条数，默认 50，最大 200
+     *
+     * 权限：调用者必须是任务可见用户（owner/assistant/visibility）或项目负责人。
+     * 排序：work_date DESC, id DESC（最近优先）。
+     *
+     * [CUSTOM:report-channel] 2026-05-07：补 spec §5.1 缺失的"按任务查汇报"端点
+     */
+    public function report__list_by_task()
+    {
+        $user = User::auth();
+
+        $taskId = intval(Request::input('task_id'));
+        if ($taskId <= 0) {
+            return Base::retError('参数错误', ['task_id' => $taskId]);
+        }
+
+        $includeChildren = (bool) Request::input('include_children', false);
+        $page = max(1, intval(Request::input('page', 1)));
+        $pagesize = min(intval(Request::input('pagesize', 50)) ?: 50, 200);
+
+        // 权限校验：复用 task__one 的可见性逻辑
+        $task = ProjectTask::userTask($taskId, null, true);
+        $project_userid = ProjectUser::whereProjectId($task->project_id)->whereOwner(1)->value('userid');
+        if ($task->visibility != 1 && $user->userid != $project_userid) {
+            $taskUserids = ProjectTaskUser::whereTaskId($taskId)->pluck('userid')->toArray();
+            $subTaskUserids = ProjectTaskUser::whereTaskPid($taskId)->pluck('userid')->toArray();
+            $visibleUserids = ProjectTaskVisibilityUser::whereTaskId($taskId)->pluck('userid')->toArray();
+            $visibleUserids = array_merge($taskUserids, $subTaskUserids, $visibleUserids);
+            if (!in_array($user->userid, $visibleUserids)) {
+                return Base::retError('无任务权限', ['task_id' => $taskId, 'force' => 1], -4002);
+            }
+        }
+
+        // 查询：复用 TaskReport::scopeForTaskAndChildren（include_children 时含子任务）
+        $query = $includeChildren
+            ? TaskReport::forTaskAndChildren($taskId)
+            : TaskReport::where('task_id', $taskId);
+
+        $total = (clone $query)->count();
+        $reports = $query->with('reporter:userid,nickname,email')
+            ->orderBy('work_date', 'desc')
+            ->orderBy('id', 'desc')
+            ->forPage($page, $pagesize)
+            ->get()
+            ->map(function (TaskReport $r) {
+                return [
+                    'id'              => $r->id,
+                    'task_id'         => $r->task_id,
+                    'parent_id'       => $r->parent_id,
+                    'project_id'      => $r->project_id,
+                    'reporter_userid' => $r->reporter_userid,
+                    'reporter_name'   => optional($r->reporter)->nickname ?? optional($r->reporter)->email ?? '',
+                    'work_date'       => $r->work_date instanceof Carbon ? $r->work_date->toDateString() : (string) $r->work_date,
+                    'values'          => $r->values,
+                    'created_at'      => $r->created_at,
+                    'updated_at'      => $r->updated_at,
+                ];
+            });
+
+        return Base::retSuccess('success', [
+            'total'    => $total,
+            'page'     => $page,
+            'pagesize' => $pagesize,
+            'task_id'  => $taskId,
+            'include_children' => $includeChildren,
+            'reports'  => $reports->toArray(),
+        ]);
+    }
+
 }
