@@ -621,6 +621,10 @@ class SystemController extends AbstractController
                     'wecom_contact_secret',
                     'wecom_auto_reg',
                     'wecom_org_sync',
+                    // [CUSTOM:wecom-files-app] 第 2 自建应用：文件管理
+                    'wecom_files_open',
+                    'wecom_files_agent_id',
+                    'wecom_files_secret',
                 ])) {
                     unset($all[$key]);
                 }
@@ -642,6 +646,11 @@ class SystemController extends AbstractController
         $setting['wecom_contact_secret'] = $setting['wecom_contact_secret'] ?: '';
         $setting['wecom_auto_reg'] = $setting['wecom_auto_reg'] ?: 'close';
         $setting['wecom_org_sync'] = $setting['wecom_org_sync'] ?: 'close';
+        // [CUSTOM:wecom-files-app] 第 2 自建应用：文件管理
+        // 用 ?: 与上面 7 行（wecom_open … wecom_org_sync）保持完全一致 — truthy fallback：把 ''/null/0/false 都替换为默认值，避免 UI 清空后字段为空串
+        $setting['wecom_files_open'] = $setting['wecom_files_open'] ?: 'close';
+        $setting['wecom_files_agent_id'] = $setting['wecom_files_agent_id'] ?: '';
+        $setting['wecom_files_secret'] = $setting['wecom_files_secret'] ?: '';
         //
         return Base::retSuccess($type == 'save' ? '保存成功' : 'success', $setting ?: json_decode('{}'));
     }
