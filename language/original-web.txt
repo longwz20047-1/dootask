@@ -2458,3 +2458,10 @@ localStorage 不可用，看板未持久化
 企微管理后台 · 应用管理 · 自建应用 · DooTask 文件 · AgentId
 文件应用 Secret
 文件应用的 Secret，与主应用 Secret 不同；CorpID 和 通讯录 Secret 复用主应用，无需重填
+我共享的
+我共享
+已开启游客访问链接
+共享状态
+共享给
+游客
+仅链接
