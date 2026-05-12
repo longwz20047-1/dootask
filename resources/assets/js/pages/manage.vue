@@ -1,7 +1,8 @@
 <template>
-    <div class="page-manage" :class="pageClass">
+    <div class="page-manage" :class="[pageClass, {'files-only-mode': filesOnlyMode}]">
         <div ref="boxMenu" class="manage-box-menu">
             <Dropdown
+                v-if="!filesOnlyMode"
                 class="page-manage-menu-dropdown main-menu"
                 trigger="click"
                 @on-click="settingRoute"
@@ -116,18 +117,18 @@
             <Scrollbar class-name="manage-item" @on-scroll="operateVisible = false">
                 <div class="menu-base">
                     <ul>
-                        <li @click="toggleRoute('dashboard')" :class="classNameRoute('dashboard')">
+                        <li v-if="!filesOnlyMode" @click="toggleRoute('dashboard')" :class="classNameRoute('dashboard')">
                             <i class="taskfont">&#xe6fb;</i>
                             <div class="menu-title">{{$L('仪表盘')}}</div>
                             <Badge v-if="dashboardTask.overdue_count > 0" class="menu-badge" type="error" :overflow-count="999" :count="dashboardTask.overdue_count"/>
                             <Badge v-else-if="dashboardTask.today_count > 0" class="menu-badge" type="info" :overflow-count="999" :count="dashboardTask.today_count"/>
                             <Badge v-else-if="dashboardTask.todo_count > 0" class="menu-badge" type="primary" :overflow-count="999" :count="dashboardTask.todo_count"/>
                         </li>
-                        <li @click="toggleRoute('calendar')" :class="classNameRoute('calendar')">
+                        <li v-if="!filesOnlyMode" @click="toggleRoute('calendar')" :class="classNameRoute('calendar')">
                             <i class="taskfont">&#xe6f5;</i>
                             <div class="menu-title">{{$L('日历')}}</div>
                         </li>
-                        <li @click="toggleRoute('messenger')" :class="classNameRoute('messenger')">
+                        <li v-if="!filesOnlyMode" @click="toggleRoute('messenger')" :class="classNameRoute('messenger')">
                             <i class="taskfont">&#xe6eb;</i>
                             <div class="menu-title">{{$L('消息')}}</div>
                             <Badge class="menu-badge" :overflow-count="999" :text="msgUnreadMention"/>
@@ -136,18 +137,18 @@
                             <i class="taskfont">&#xe6f3;</i>
                             <div class="menu-title">{{$L('文件')}}</div>
                         </li>
-                        <li @click="toggleRoute('application')" :class="classNameRoute('application')">
+                        <li v-if="!filesOnlyMode" @click="toggleRoute('application')" :class="classNameRoute('application')">
                             <i class="taskfont">&#xe60c;</i>
                             <div class="menu-title">{{$L('应用')}}</div>
                             <Badge class="menu-badge" :overflow-count="999" :text="String((reportUnreadNumber + approveUnreadNumber) || '')"/>
                         </li>
-                        <li v-for="(item, key) in filterMicroAppsMenusMain" :key="key" @click="onTabbarClick('microApp', item)">
+                        <li v-if="!filesOnlyMode" v-for="(item, key) in filterMicroAppsMenusMain" :key="key" @click="onTabbarClick('microApp', item)">
                             <div class="apply-icon no-dark-content" :style="{backgroundImage: `url(${item.icon})`}"></div>
                             <div class="menu-title">{{item.label}}</div>
                         </li>
                     </ul>
                 </div>
-                <div ref="menuProject" class="menu-project">
+                <div v-if="!filesOnlyMode" ref="menuProject" class="menu-project">
                     <Draggable
                         :list="projectDraggableList"
                         :animation="150"
@@ -224,7 +225,7 @@
                     <Input type="search" v-model="projectKeyValue" :placeholder="$L(`共${projectTotal || cacheProjects.length}个项目，搜索...`)" clearable/>
                 </Form>
             </div>
-            <ButtonGroup class="manage-box-new-group">
+            <ButtonGroup v-if="!filesOnlyMode" class="manage-box-new-group">
                 <Button class="manage-box-new" type="primary" icon="md-add" @click="onAddMenu('task')">{{$L('新建任务')}}</Button>
                 <Dropdown @on-click="onAddMenu" trigger="click">
                     <Button type="primary">
@@ -566,6 +567,9 @@ export default {
         emitter.on('openManageExport', this.openManageExport);
         //
         document.addEventListener('keydown', this.shortcutEvent);
+
+        // [CUSTOM:wecom-files-app] files-only 路由守卫（覆盖首屏；watch 默认非 immediate，首屏不触发）
+        this.enforceFilesOnlyRoute();
     },
 
     activated() {
@@ -593,6 +597,14 @@ export default {
     },
 
     computed: {
+        // [CUSTOM:wecom-files-app] 文件应用精简模式：URL 带 ?app=files 时隐藏其他菜单
+        // 单条件判定：只看 query.app，不再叠加 route.name 检查 —— 用户手动改地址栏到
+        // /manage/dashboard?app=files 时也立即进精简模式（侧栏菜单瞬间收起），
+        // 同时 Step 7 的 enforceFilesOnlyRoute 异步把路由跳到 /manage/file。
+        // 避免"完整菜单一帧闪现"的 UX 闪烁。
+        filesOnlyMode() {
+            return this.$route.query.app === 'files';
+        },
         ...mapState([
             'userInfo',
             'userIsAdmin',
@@ -820,6 +832,8 @@ export default {
     watch: {
         '$route' () {
             this.chackPass();
+            // [CUSTOM:wecom-files-app] files-only 路由守卫
+            this.enforceFilesOnlyRoute();
         },
 
         userInfo() {
@@ -914,6 +928,12 @@ export default {
     },
 
     methods: {
+        // [CUSTOM:wecom-files-app] files-only 模式下若被路由到非 file 页（手动改 URL），强制跳回 file
+        enforceFilesOnlyRoute() {
+            if (this.$route.query.app === 'files' && this.$route.name !== 'manage-file') {
+                this.$router.replace({ name: 'manage-file', query: { app: 'files' } });
+            }
+        },
         transformEmojiToHtml,
         chackPass() {
             if (this.userInfo.changepass === 1) {
