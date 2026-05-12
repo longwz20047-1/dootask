@@ -259,6 +259,42 @@ class FileController extends AbstractController
     }
 
     /**
+     * @api {get} api/file/shared 我共享的文件汇总
+     *
+     * @apiDescription [CUSTOM:file-share-manage] 需要token身份；返回当前用户拥有的、所有 share=1 或 guest_access=1 的文件/文件夹（跨文件夹拉平，pid 一律为 0）
+     * @apiVersion 1.0.0
+     * @apiGroup file
+     * @apiName shared
+     *
+     * @apiSuccess {Number} ret     返回状态码（1正确、0错误）
+     * @apiSuccess {String} msg     返回信息（错误描述）
+     * @apiSuccess {Object[]} data  文件列表（结构与 file/lists 元素同构）
+     */
+    public function shared()
+    {
+        // [CUSTOM:file-share-manage]
+        $user = User::auth();
+        if ($user->isTemp()) {
+            return Base::retError('无法查看共享列表');
+        }
+        $list = File::whereUserid($user->userid)
+            ->where(function ($q) {
+                $q->where('share', 1)->orWhere('guest_access', 1);
+            })
+            ->orderByDesc('updated_at')
+            ->take(500)
+            ->get();
+        $array = [];
+        foreach ($list as $file) {
+            $temp = $file->toArray();
+            $temp['pid'] = 0;            // 拉平：汇总视图里不体现层级（与 getFileList 对「别人共享给我」的处理一致）
+            $temp['permission'] = 1000;  // 自己的文件：与 getFileList 对 pid=0 自己文件给的 permission 一致
+            $array[] = File::handleImageUrl($temp);
+        }
+        return Base::retSuccess('success', $array);
+    }
+
+    /**
      * @api {get} api/file/add 添加、修改文件(夹)
      *
      * @apiDescription 需要token身份
