@@ -96,6 +96,24 @@
                                 <div v-else>{{$L('尚未同步')}}</div>
                             </div>
                         </FormItem>
+                        <!-- [CUSTOM:wecom-files-app] 第 2 自建应用：文件管理 -->
+                        <FormItem :label="$L('启用文件应用')" prop="wecom_files_open">
+                            <RadioGroup v-model="formData.wecom_files_open">
+                                <Radio label="open">{{ $L('开启') }}</Radio>
+                                <Radio label="close">{{ $L('关闭') }}</Radio>
+                            </RadioGroup>
+                            <div class="form-tip">{{$L('开启后第 2 个自建应用（DooTask 文件）可用，员工点击企微工作台的"DooTask 文件"图标进入精简版文件管理页')}}</div>
+                        </FormItem>
+                        <template v-if="formData.wecom_files_open === 'open'">
+                            <FormItem :label="$L('文件应用 AgentId')" prop="wecom_files_agent_id">
+                                <Input v-model="formData.wecom_files_agent_id" type="number"/>
+                                <div class="form-tip">{{$L('企微管理后台 · 应用管理 · 自建应用 · DooTask 文件 · AgentId')}}</div>
+                            </FormItem>
+                            <FormItem :label="$L('文件应用 Secret')" prop="wecom_files_secret">
+                                <Input v-model="formData.wecom_files_secret" type="password"/>
+                                <div class="form-tip">{{$L('文件应用的 Secret，与主应用 Secret 不同；CorpID 和 通讯录 Secret 复用主应用，无需重填')}}</div>
+                            </FormItem>
+                        </template>
                     </template>
                 </div>
             </div>
