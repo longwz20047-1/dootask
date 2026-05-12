@@ -1564,6 +1564,26 @@ export default {
         });
     },
 
+    /**
+     * [CUSTOM:file-share-manage] 我共享的文件汇总
+     * @param state
+     * @param dispatch
+     * @returns {Promise<unknown>}
+     */
+    sharedFiles({state, dispatch}) {
+        return new Promise(function (resolve, reject) {
+            dispatch("call", {
+                url: 'file/shared',
+            }).then((result) => {
+                dispatch("saveFile", result.data);
+                resolve(result)
+            }).catch(e => {
+                console.warn(e);
+                reject(e)
+            });
+        });
+    },
+
     /** *****************************************************************************************/
     /** ************************************** 项目 **********************************************/
     /** *****************************************************************************************/
