@@ -1,6 +1,6 @@
 <template>
     <div class="page-manage" :class="[pageClass, {'files-only-mode': filesOnlyMode}]">
-        <div ref="boxMenu" class="manage-box-menu">
+        <div v-if="!filesOnlyMode" ref="boxMenu" class="manage-box-menu">
             <Dropdown
                 v-if="!filesOnlyMode"
                 class="page-manage-menu-dropdown main-menu"
