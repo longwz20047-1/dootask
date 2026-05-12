@@ -568,7 +568,13 @@ export default {
         //
         document.addEventListener('keydown', this.shortcutEvent);
 
-        // [CUSTOM:wecom-files-app] files-only 路由守卫（覆盖首屏；watch 默认非 immediate，首屏不触发）
+        // [CUSTOM:wecom-files-app] 首屏判定文件应用会话：URL 带 ?app=files 则打 sessionStorage 标记
+        // （之后 file.vue 内部导航丢了 query 也保持精简模式）；否则清残留标记（确保从主应用进入是完整模式）
+        try {
+            if (this.$route.query.app === 'files') sessionStorage.setItem('dootaskFilesOnly', '1');
+            else sessionStorage.removeItem('dootaskFilesOnly');
+        } catch (e) {}
+        // files-only 路由守卫（覆盖首屏；watch 默认非 immediate，首屏不触发）
         this.enforceFilesOnlyRoute();
     },
 
@@ -603,7 +609,10 @@ export default {
         // 同时 Step 7 的 enforceFilesOnlyRoute 异步把路由跳到 /manage/file。
         // 避免"完整菜单一帧闪现"的 UX 闪烁。
         filesOnlyMode() {
-            return this.$route.query.app === 'files';
+            // [CUSTOM:wecom-files-app] 既看 URL ?app=files，也看 sessionStorage 标记 —
+            // file.vue 内部打开/关闭文件的导航会丢掉 ?app=files query，靠 sessionStorage 保持精简模式不闪回
+            if (this.$route.query.app === 'files') return true;
+            try { return sessionStorage.getItem('dootaskFilesOnly') === '1'; } catch (e) { return false; }
         },
         ...mapState([
             'userInfo',
@@ -930,7 +939,16 @@ export default {
     methods: {
         // [CUSTOM:wecom-files-app] files-only 模式下若被路由到非 file 页（手动改 URL），强制跳回 file
         enforceFilesOnlyRoute() {
-            if (this.$route.query.app === 'files' && this.$route.name !== 'manage-file') {
+            let flagged;
+            try {
+                // 每次导航若 URL 仍带 ?app=files 就（重新）打标记
+                if (this.$route.query.app === 'files') sessionStorage.setItem('dootaskFilesOnly', '1');
+                flagged = sessionStorage.getItem('dootaskFilesOnly') === '1';
+            } catch (e) {
+                flagged = this.$route.query.app === 'files';
+            }
+            // 文件应用会话内：被路由到非 file 页（手动改 URL）→ 强制跳回 file 页并带回 ?app=files
+            if (flagged && this.$route.name !== 'manage-file') {
                 this.$router.replace({ name: 'manage-file', query: { app: 'files' } });
             }
         },
