@@ -592,6 +592,10 @@ export default {
         goNext() {
             this.loginJump = true
             const fromUrl = decodeURIComponent($A.getObject(this.$route.query, 'from'))
+            // [CUSTOM:wecom-files-app] 登录跳转目标不是文件应用 → 清掉精简模式残留标记（同一浏览器 tab 先用文件应用、再正常登录主应用的场景）
+            try {
+                if (!/[?&]app=files\b/.test(fromUrl || '')) sessionStorage.removeItem('dootaskFilesOnly');
+            } catch (e) {}
             if (fromUrl) {
                 $A.IDBSet("clearCache", "login").then(_ => {
                     window.location.replace(fromUrl)

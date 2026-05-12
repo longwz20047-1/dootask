@@ -569,10 +569,11 @@ export default {
         document.addEventListener('keydown', this.shortcutEvent);
 
         // [CUSTOM:wecom-files-app] 首屏判定文件应用会话：URL 带 ?app=files 则打 sessionStorage 标记
-        // （之后 file.vue 内部导航丢了 query 也保持精简模式）；否则清残留标记（确保从主应用进入是完整模式）
+        // 只 set 不 remove —— manage.vue 在「离开 /manage 去 /single/file/* 预览文件后点后退」时会被销毁重建，
+        // 此时 URL 已是 /manage/file/:folderId（query 丢了），若在这里 remove 就会把精简模式标记清掉、左侧菜单闪回。
+        // 清标记的职责交给 login.vue（登录到非文件应用时清），企微每次打开应用都是新 webview（sessionStorage 自然为空），无需在此清。
         try {
             if (this.$route.query.app === 'files') sessionStorage.setItem('dootaskFilesOnly', '1');
-            else sessionStorage.removeItem('dootaskFilesOnly');
         } catch (e) {}
         // files-only 路由守卫（覆盖首屏；watch 默认非 immediate，首屏不触发）
         this.enforceFilesOnlyRoute();
