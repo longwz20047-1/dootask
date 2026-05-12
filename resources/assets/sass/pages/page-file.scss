@@ -487,6 +487,24 @@
                                     color: #ffffff;
                                 }
                             }
+                            // [CUSTOM:file-share-manage] 已开启游客访问链接 —— 左下角橙色圆点，避开右下角的 share-icon
+                            .guest-icon {
+                                position: absolute;
+                                left: 0;
+                                bottom: 0;
+                                background-color: #FF9F40;
+                                width: 20px;
+                                height: 20px;
+                                border-radius: 50%;
+                                display: flex;
+                                align-items: center;
+                                justify-content: center;
+                                transform: scale(0.9);
+                                .ivu-icon {
+                                    font-size: 14px;
+                                    color: #ffffff;
+                                }
+                            }
                             .avatar-char {
                                 font-size: 18px;
                             }

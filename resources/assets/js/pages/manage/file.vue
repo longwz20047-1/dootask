@@ -182,6 +182,10 @@
                                                 <p v-else>{{$L('所有者创建于')}}: {{item.created_at}}</p>
                                             </UserAvatarTip>
                                         </template>
+                                        <!-- [CUSTOM:file-share-manage] 已开启游客访问链接 -->
+                                        <div v-if="item.guest_access" class="guest-icon no-dark-content" :title="$L('已开启游客访问链接')">
+                                            <Icon type="md-globe" />
+                                        </div>
                                     </div>
                                     <div v-if="item._edit" class="file-input">
                                         <Input
@@ -768,6 +772,27 @@ export default {
                             iconArray
                         ]);
                     }
+                }
+            },
+            // [CUSTOM:file-share-manage] 共享状态
+            {
+                title: this.$L('共享状态'),
+                width: 130,
+                render: (h, {row}) => {
+                    const tags = [];
+                    if (row.share) tags.push(h('Tag', {props: {color: 'green'}}, this.$L('共享')));
+                    if (row.guest_access) tags.push(h('Tag', {props: {color: 'orange'}}, this.$L('游客')));
+                    return h('div', tags);
+                }
+            },
+            // [CUSTOM:file-share-manage] 共享给
+            {
+                title: this.$L('共享给'),
+                width: 140,
+                render: (h, {row}) => {
+                    if (row.share) return h('span', this.$L('已共享'));
+                    if (row.guest_access) return h('span', {style: {color: '#999'}}, '— ' + this.$L('仅链接'));
+                    return h('span', '');
                 }
             },
             {
