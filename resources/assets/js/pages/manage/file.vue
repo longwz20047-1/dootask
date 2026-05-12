@@ -565,6 +565,11 @@ export default {
             hideShared: false,
             columns: [],
 
+            // [CUSTOM:file-share-manage] 「我共享的」汇总视图
+            sharedView: false,
+            sharedIds: [],
+            _tableModeBeforeShared: "",
+
             shareShow: false,
             shareInfo: {id: 0, type: 'all', userid: 0, permission: 1},
             shareList: [],
@@ -623,6 +628,7 @@ export default {
         FileObject.sort = await $A.IDBJson("cacheFileSort")
         FileObject.mode = await $A.IDBString("fileTableMode")
         FileObject.shared = await $A.IDBBoolean("fileHideShared")
+        FileObject.sharedView = await $A.IDBBoolean("fileSharedView")   // [CUSTOM:file-share-manage]
         next()
     },
 
@@ -630,6 +636,7 @@ export default {
     created() {
         this.tableMode = FileObject.mode
         this.hideShared = FileObject.shared
+        this.sharedView = FileObject.sharedView   // [CUSTOM:file-share-manage]
         this.columns = [
             {
                 type: 'selection',
@@ -815,6 +822,10 @@ export default {
             }
             return item;
         });
+        // [CUSTOM:file-share-manage] 刷新页面后从 IDB 恢复了 sharedView，需要补拉一次汇总数据
+        if (this.sharedView) {
+            this.$nextTick(() => this.loadSharedView());
+        }
     },
 
     mounted() {
@@ -1007,6 +1018,23 @@ export default {
             $A.IDBSave("fileHideShared", val)
         },
 
+        // [CUSTOM:file-share-manage] 「我共享的」汇总视图开关
+        sharedView(val) {
+            $A.IDBSave("fileSharedView", val)
+            if (val) {
+                this.searchKey = '';
+                if (typeof this.clearShear === 'function') this.clearShear();
+                if (typeof this.clearSelect === 'function') this.clearSelect();
+                this._tableModeBeforeShared = this.tableMode;
+                this.tableMode = 'table';
+                this.loadSharedView();
+            } else {
+                this.sharedIds = [];
+                this.tableMode = this._tableModeBeforeShared || 'block';
+                if (this.routeName === 'manage-file') this.getFileList();
+            }
+        },
+
         fileShow(val) {
             if (!val) {
                 this.browseFile(0)
@@ -1154,6 +1182,19 @@ export default {
                         this.browseFolder(0);
                     }
                 });
+            });
+        },
+
+        // [CUSTOM:file-share-manage] 拉取「我共享的」汇总数据 → 写进 fileLists（via saveFile），id 列表存进 sharedIds
+        loadSharedView() {
+            this.loadIng++;
+            this.$store.dispatch("sharedFiles").then(({data}) => {
+                this.loadIng--;
+                this.sharedIds = (data || []).map(({id}) => id);
+            }).catch(({msg}) => {
+                this.loadIng--;
+                this.sharedIds = [];
+                $A.modalError(msg);
             });
         },
 
