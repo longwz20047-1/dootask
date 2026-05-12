@@ -23,6 +23,56 @@ use Request;
 class WecomController extends AbstractController
 {
     /**
+     * [CUSTOM:wecom-files-app] 解析"哪一组 wecom 配置"
+     *
+     * @return array{agent_id:int, secret:string, app:string} 规范化的应用配置
+     * @throws ApiException 配置缺失/未开启
+     */
+    private function resolveAppConfig(array $setting, string $app): array
+    {
+        if ($app === 'files') {
+            if (($setting['wecom_files_open'] ?? 'close') !== 'open') {
+                throw new ApiException('企业微信文件应用未开启');
+            }
+            $agentId = intval($setting['wecom_files_agent_id'] ?? 0);
+            $secret = trim((string) ($setting['wecom_files_secret'] ?? ''));
+            if ($agentId <= 0 || $secret === '') {
+                throw new ApiException('企业微信文件应用配置不完整，请联系管理员');
+            }
+            return ['agent_id' => $agentId, 'secret' => $secret, 'app' => 'files'];
+        }
+        // default
+        return [
+            'agent_id' => intval($setting['wecom_agent_id'] ?? 0),
+            'secret' => $setting['wecom_secret'],
+            'app' => 'default',
+        ];
+    }
+
+    /**
+     * [CUSTOM:wecom-files-app] 把 app 字符串归一化（白名单）
+     */
+    private function normalizeApp(string $app): string
+    {
+        return $app === 'files' ? 'files' : 'default';
+    }
+
+    /**
+     * [CUSTOM:wecom-files-app] 按 app 创 OAuth client
+     *
+     * default → 沿用 makeOAuthClient（cachePrefix 'wecom_oauth'，与现状完全一致，
+     *           不触发 access_token 缓存失效）
+     * files   → 独立 cachePrefix 'wecom_oauth_files'，两 app token 缓存互不冲突
+     */
+    private function makeOAuthClientForApp(array $setting, array $appConfig): WecomApiClient
+    {
+        if ($appConfig['app'] === 'files') {
+            return new WecomApiClient($setting['wecom_corp_id'], $appConfig['secret'], 'wecom_oauth_files');
+        }
+        return $this->makeOAuthClient($setting);
+    }
+
+    /**
      * 获取企微配置（内部用）
      */
     private function getWecomSetting(): array
@@ -93,8 +143,14 @@ class WecomController extends AbstractController
      */
     public function entry()
     {
-        // M1+ 支持 ?redirect=<path> 深链（如 task 详情），OAuth 完成后自动跳目标页
+        // [CUSTOM:wecom-files-app] 多应用支持：?app=files 走文件应用配置
+        $app = $this->normalizeApp((string) Request::input('app', 'default'));
+
+        // M1+ 支持 ?redirect=<path> 深链；文件应用未传 redirect 时强制注入 /manage/file?app=files
         $redirect = $this->sanitizeRedirect((string) Request::input('redirect', ''));
+        if ($app === 'files' && $redirect === '') {
+            $redirect = '/manage/file?app=files';
+        }
 
         if (Doo::userId() > 0) {
             $target = $redirect !== ''
@@ -105,20 +161,23 @@ class WecomController extends AbstractController
 
         try {
             $setting = $this->getWecomSetting();
+            $appConfig = $this->resolveAppConfig($setting, $app);
         } catch (ApiException $e) {
             return redirect($this->frontendUrl("#/login?wecom_error=" . urlencode(Doo::translate($e->getMessage()))));
         }
-        $client = $this->makeOAuthClient($setting);
+
+        // 用对应 app 的 secret 创 OAuth client（default 沿用原 cachePrefix，零缓存影响）
+        $client = $this->makeOAuthClientForApp($setting, $appConfig);
 
         $state = Str::random(32);
-        Cache::put("wecom_state:{$state}", true, 300);
+        // [CUSTOM:wecom-files-app] state 携带 app 标识，callback 用同一组 secret 换 token
+        Cache::put("wecom_state:{$state}", ['app' => $appConfig['app']], 300);
         if ($redirect !== '') {
             Cache::put("wecom_redirect:{$state}", $redirect, 300);
         }
 
         $redirectUri = url('/api/wecom/callback');
-        $agentId = intval($setting['wecom_agent_id']);
-        $oauthUrl = $client->buildOAuthUrl($redirectUri, $agentId, $state);
+        $oauthUrl = $client->buildOAuthUrl($redirectUri, $appConfig['agent_id'], $state);
 
         return redirect($oauthUrl);
     }
@@ -140,16 +199,23 @@ class WecomController extends AbstractController
             return redirect($this->frontendUrl("#/login?wecom_error=" . urlencode(Doo::translate('授权失败：未获取到 code'))));
         }
 
-        if (!Cache::pull("wecom_state:{$state}")) {
+        // [CUSTOM:wecom-files-app] state 兼容老格式 (bool true) 与新格式 (array{app:...})
+        $statePayload = Cache::pull("wecom_state:{$state}");
+        if (!$statePayload) {
             return redirect($this->frontendUrl("#/login?wecom_error=" . urlencode(Doo::translate('授权失败：state 验证失败'))));
         }
+        // 新格式：从 state 读 app；老格式（bool）默认 default
+        $stateApp = is_array($statePayload) ? ($statePayload['app'] ?? 'default') : 'default';
+        $stateApp = $this->normalizeApp($stateApp);
 
         try {
             $setting = $this->getWecomSetting();
+            $appConfig = $this->resolveAppConfig($setting, $stateApp);
         } catch (ApiException $e) {
             return redirect($this->frontendUrl("#/login?wecom_error=" . urlencode(Doo::translate($e->getMessage()))));
         }
-        $client = $this->makeOAuthClient($setting);
+        // 用 state 携带的 app 对应的 secret（default 沿用原 cachePrefix，零缓存影响）
+        $client = $this->makeOAuthClientForApp($setting, $appConfig);
         $corpId = $setting['wecom_corp_id'];
 
         try {
