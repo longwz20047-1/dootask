@@ -2452,3 +2452,9 @@ localStorage 不可用，看板未持久化
 看板配置保存到浏览器本地（localStorage），切换浏览器/清除缓存会丢失。后端持久化待 Sprint 10 dashboard_charts 表实施
 我的待汇报
 上报仪表盘
+启用文件应用
+开启后第 2 个自建应用（DooTask 文件）可用，员工点击企微工作台的"DooTask 文件"图标进入精简版文件管理页
+文件应用 AgentId
+企微管理后台 · 应用管理 · 自建应用 · DooTask 文件 · AgentId
+文件应用 Secret
+文件应用的 Secret，与主应用 Secret 不同；CorpID 和 通讯录 Secret 复用主应用，无需重填
