@@ -85,6 +85,12 @@
                 </template>
                 <div v-if="loadIng > 0" class="nav-load"><Loading/></div>
                 <div class="flex-full"></div>
+                <!-- [CUSTOM:file-share-manage] 我共享的汇总视图开关 -->
+                <div class="only-checkbox">
+                    <Checkbox v-model="sharedView">
+                        {{showBtnText ? $L('我共享的') : $L('我共享')}}
+                    </Checkbox>
+                </div>
                 <div v-if="hasShareFile" class="only-checkbox">
                     <Checkbox v-model="hideShared">
                         {{showBtnText ? $L('仅显示我的') : $L('仅我的')}}
@@ -889,8 +895,11 @@ export default {
         },
 
         fileList() {
-            const {fileLists, searchKey, hideShared, pid, selectedItems, userId} = this;
+            const {fileLists, searchKey, hideShared, pid, selectedItems, userId, sharedView, sharedIds} = this;
             const list = $A.cloneJSON(sortBy(fileLists.filter(file => {
+                if (sharedView) {                          // [CUSTOM:file-share-manage] 汇总视图：只看 file/shared 返回的那批
+                    return sharedIds.includes(file.id);
+                }
                 if (hideShared && file.userid != userId && file.created_id != userId) {
                     return false
                 }
@@ -1514,6 +1523,7 @@ export default {
         },
 
         browseFolder(id, shakeId = null) {
+            if (this.sharedView) this.sharedView = false;   // [CUSTOM:file-share-manage] 点文件夹/面包屑「全部文件」→ 退出汇总视图
             if (this.pid == id && this.fid == 0 && shakeId) {
                 this.shakeFile(shakeId);
                 return;
@@ -2119,6 +2129,7 @@ export default {
         },
 
         onSearchChange() {
+            if (this.sharedView && this.searchKey.trim() != '') this.sharedView = false;   // [CUSTOM:file-share-manage] 用搜索 → 退出汇总视图
             this.searchTimeout && clearTimeout(this.searchTimeout);
             if (this.searchKey.trim() != '') {
                 this.searchTimeout = setTimeout(() => {
