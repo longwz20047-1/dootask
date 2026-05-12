@@ -2209,6 +2209,7 @@ export default {
                 this.$store.dispatch("saveFile", data);
                 this.$set(this.shareInfo, 'userids', []);
                 this.getShare();
+                if (this.sharedView) this.loadSharedView();   // [CUSTOM:file-share-manage]
             }).catch(({ret, msg}) => {
                 if (ret === -3001) {
                     $A.modalConfirm({
@@ -2244,6 +2245,7 @@ export default {
                 item._permission = item.permission;
                 $A.messageSuccess(msg);
                 this.$store.dispatch("saveFile", data);
+                if (this.sharedView) this.loadSharedView();   // [CUSTOM:file-share-manage]
                 if (item.permission === -1) {
                     let index = this.shareList.findIndex(({userid}) => userid == item.userid);
                     if (index > -1) {
